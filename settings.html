@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>参数与运维 · 仓位管家</title>
-<link rel="stylesheet" href="assets/app.css?v=20260916233028">
+<link rel="stylesheet" href="assets/app.css?v=20260916234425">
 </head>
 <body>
 <div class="app">
@@ -24,8 +24,14 @@
       <div id="groups"></div>
       <div>
         <div class="card" style="margin-bottom:16px">
-          <div class="card-h"><h2>标的清单</h2><span class="sub" id="instSub"></span></div>
-          <div id="insts" style="max-height:420px;overflow:auto"></div>
+          <div class="card-h"><h2>标的清单</h2><span class="sub" id="instSub"></span>
+            <span class="right toolbar">
+              <label class="tiny" style="display:flex;align-items:center;gap:5px;cursor:pointer">
+                <input type="checkbox" id="showRemoved" style="width:auto"> 显示已移除
+              </label>
+              <button class="btn sm primary" id="btnAddInst">+ 添加自选</button>
+            </span></div>
+          <div id="insts" style="max-height:460px;overflow:auto"></div>
         </div>
         <div class="card" style="margin-bottom:16px">
           <div class="card-h"><h2>同步日志</h2><span class="sub">最近 80 条</span>
@@ -48,10 +54,10 @@
 
   </main>
 </div>
-<script src="data/data.js?v=20260916233028"></script>
-<script src="assets/app.js?v=20260916233028"></script>
+<script src="data/data.js?v=20260916234425"></script>
+<script src="assets/app.js?v=20260916234425"></script>
 <script>
-let G = {}, CHANGES = {};
+let G = {}, CHANGES = {}, SHOW_REMOVED = false;
 
 function field(r) {
   const k = r.key, v = r.value;
@@ -87,18 +93,46 @@ async function loadSettings() {
 }
 
 async function loadInsts() {
-  const r = await api("/api/instruments");
-  $("#instSub").textContent = `${r.items.length} 个标的（含指数）`;
+  const r = await api("/api/instruments" + (SHOW_REMOVED ? "?include_removed=1" : ""));
+  const items = r.items || [];
+  const off = items.filter(x => x.active === 0).length;
+  const on = items.length - off;
+  $("#instSub").textContent = `${on} 个在用${off ? ` · ${off} 个已移除` : ""}（含指数）`;
   $("#insts").innerHTML = `<table class="tbl mini"><thead><tr>
-    <th>标的</th><th>方向</th><th>池子</th><th style="text-align:right">日K</th></tr></thead><tbody>
-    ${r.items.map(x => `<tr>
+    <th>标的</th><th>方向</th><th>池子</th>
+    <th style="text-align:right">日K</th><th style="text-align:right">价位</th>
+    <th style="width:74px"></th></tr></thead><tbody>
+    ${items.map(x => `<tr ${x.active === 0 ? 'style="opacity:.45"' : ""}>
       <td><a href="detail.html?code=${encodeURIComponent(x.code)}"><b>${esc(x.name)}</b></a>
-        <div class="cd">${esc(x.code)} · ${esc(x.sector || "")} · ${esc(x.type === "index" ? "指数" : "")}</div></td>
+        <div class="cd">${esc(x.code)} · ${esc(x.sector || "")}
+          · ${esc(x.type === "index" ? "指数" : "")}${x.active === 0 ? " · 已移除" : ""}</div></td>
       <td>${x.type === "index" ? "—" : lab(x.direction_label)}</td>
       <td class="tiny">${esc(POOL_CN[x.pool] || x.pool || "—")}
         ${x.primary_index ? `<div class="cd">主指数 ${esc(x.primary_index)}</div>` : ""}</td>
-      <td class="n" style="text-align:right">${x.bars || 0}</td></tr>`).join("")}
-    </tbody></table>`;
+      <td class="n" style="text-align:right">${x.bars || 0}</td>
+      <td class="n" style="text-align:right">${x.levels || 0}</td>
+      <td style="text-align:right">${x.active === 0
+        ? `<button class="btn sm ghost" data-add="${esc(x.code)}">加回</button>`
+        : (x.type === "index"
+            ? `<span class="tiny" title="基准指数不支持移除">基准</span>`
+            : `<button class="btn sm ghost" data-rm="${esc(x.code)}" data-nm="${esc(x.name)}">移除</button>`)}</td>
+    </tr>`).join("")}
+    </tbody></table>
+    <div class="tiny" style="padding:10px 4px 2px;line-height:1.8">
+      移除是<b>软删</b>：标的从看板/日报/清单/线上快照消失，也不再提醒，
+      但已录价位与历史日K<b>全部保留</b> —— 加回来即恢复。
+    </div>`;
+  $$("#insts [data-rm]").forEach(b => b.onclick = () =>
+    confirmRemoveInstrument(b.dataset.rm, b.dataset.nm, loadInsts));
+  $$("#insts [data-add]").forEach(b => b.onclick = async () => {
+    // "加回" 走同一个添加接口：后端发现是已存在但被移除的行 → 复活（不新建、历史接上）
+    try {
+      const r = await post("/api/watchlist_add", { code: b.dataset.add, sync: true });
+      if (r.error) throw new Error(r.error);
+      toast(`已恢复 ${r.name}（${r.code}）`);
+      await loadInsts();
+    } catch (e) { toast("恢复失败：" + e.message, true); }
+  });
 }
 
 async function loadLogs() {
@@ -132,6 +166,9 @@ $("#btnSyncAll").onclick = async () => {
   } catch (e) { toast("失败：" + e.message, true); }
   finally { b.disabled = false; b.textContent = "全量同步"; }
 };
+
+$("#btnAddInst").onclick = () => openAddInstrument(async () => { await loadInsts(); await loadLogs(); });
+$("#showRemoved").onchange = e => { SHOW_REMOVED = e.target.checked; loadInsts(); };
 
 mountNav("/settings");
 Promise.all([loadSettings(), loadInsts(), loadLogs()])

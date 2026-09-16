@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>看板 · 仓位管家</title>
-<link rel="stylesheet" href="assets/app.css?v=20260916233028">
+<link rel="stylesheet" href="assets/app.css?v=20260916234425">
 </head>
 <body>
 <div class="app">
@@ -16,6 +16,7 @@
       <span class="sub" id="pgSub">行情判断由人做，系统只做数学比较与查表</span>
       <span class="right toolbar">
         <span id="pvSlot"></span>
+        <button class="btn sm ghost" id="btnAddWatch" title="添加自选股；移除在「参数与运维 → 标的清单」">+ 自选</button>
         <button class="btn sm" id="btnEval">跑一遍评估</button>
         <button class="btn sm primary" id="btnSync">同步日K</button>
       </span>
@@ -84,8 +85,8 @@
   </main>
 </div>
 
-<script src="data/data.js?v=20260916233028"></script>
-<script src="assets/app.js?v=20260916233028"></script>
+<script src="data/data.js?v=20260916234425"></script>
+<script src="assets/app.js?v=20260916234425"></script>
 <script>
 let DATA = null, FILTER = "all", POLL = null;
 
@@ -243,6 +244,7 @@ $$("#filterSeg button").forEach(b => b.onclick = () => {
   renderTable();
 });
 
+$("#btnAddWatch").onclick = () => openAddInstrument(load);
 $("#btnEval").onclick = async () => {
   const b = $("#btnEval"); b.disabled = true; b.textContent = "评估中…";
   try { const r = await post("/api/evaluate", {}); toast(`评估完成，信号 ${r.signals != null ? r.signals : r.count || 0} 条`); await load(); }

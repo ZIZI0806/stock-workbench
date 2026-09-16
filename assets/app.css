@@ -91,6 +91,9 @@ button { font-family: inherit; cursor: pointer; }
 .btn:hover { background: var(--bg); box-shadow: var(--sh1); }
 .btn.primary { background: var(--primary); border-color: var(--primary); color: #fff; }
 .btn.primary:hover { filter: brightness(1.06); }
+/* 危险动作（移除自选）：单独一个红系，别跟 --up（涨）混用语义 */
+.btn.danger { background: var(--up); border-color: var(--up); color: #fff; }
+.btn.danger:hover { filter: brightness(1.06); }
 .btn.ghost { border-color: transparent; background: transparent; color: var(--t2); }
 .btn.ghost:hover { background: var(--bg); color: var(--t1); }
 .btn.sm { padding: 5px 10px; font-size: 12px; border-radius: 8px; }
@@ -322,7 +325,10 @@ body.readonly #btnEvalOne, body.readonly #btnSyncOne, body.readonly #btnReplay,
 body.readonly #btnSave, body.readonly #btnReload,
 body.readonly #btnHandleAll, body.readonly #alerts [data-h],
 body.readonly [data-set], body.readonly #btnAcceptPair,
-body.readonly #mOk, body.readonly #btnLabel { display: none !important; }
+body.readonly #mOk, body.readonly #btnLabel,
+/* 自选增删在线上无后端可写：按钮与"移除/加回"一律藏掉 */
+body.readonly #btnAddWatch, body.readonly #btnAddInst, body.readonly [data-rm],
+body.readonly [data-add], body.readonly #showRemoved { display: none !important; }
 /* 快照里没有「盘中」这回事：预演徽章与预演行一律不显示 */
 body.readonly .pv-badge, body.readonly .pv { display: none !important; }
 

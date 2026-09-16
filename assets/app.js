@@ -313,6 +313,94 @@ function pickLabel(inst, onDone) {
   };
 }
 
+/* ---------------- 自选股：加 / 移除 ----------------
+   后端语义要记住两条，UI 文案也照这个说：
+    ① 移除是**软删**（active=0）—— 历史价位/信号/哨兵/日K 都不删，再加回来就都还在。
+    ② 加自选时后端会顺手解析名称 → 挂主指数 → 拉日K → 跑一次评估，所以会慢一两秒。
+   基准指数不允许移除（共振入场要读它的方向标签）。 */
+function openAddInstrument(onDone) {
+  openModal(`
+    <h3>添加自选股</h3>
+    <div class="sub">填 6 位代码即可（如 <code>600519</code>）。交易所后缀会自动推断；
+      沪市指数请写全 <code>000001.SH</code>（只写 000001 会被当成平安银行）。</div>
+    <div class="field"><label>代码 <span class="tiny">必填</span></label>
+      <input id="aiCode" class="mono" placeholder="600519 或 600519.SH" autocomplete="off"></div>
+    <div class="field"><label>名称 <span class="tiny">可留空 —— 留空则自动联网取</span></label>
+      <input id="aiName" placeholder="贵州茅台" autocomplete="off"></div>
+    <div class="field"><label>板块 <span class="tiny">可留空，仅用于展示</span></label>
+      <input id="aiSector" placeholder="白酒" autocomplete="off"></div>
+    <div class="field"><label>分组 <span class="tiny">可留空</span></label>
+      <input id="aiGroup" placeholder="比如：新关注" autocomplete="off"></div>
+    <div class="field"><label>类型</label>
+      <div class="lvlpick" id="aiType" style="grid-template-columns:repeat(2,1fr)">
+        <button data-k="stock" class="on">个股</button>
+        <button data-k="index">指数（基准）</button>
+      </div>
+      <div class="tiny" style="margin-top:4px">指数只进基准带，不参与结构判定。</div></div>
+    <div class="tiny" id="aiMsg" style="min-height:18px;color:var(--warn)"></div>
+    <div class="toolbar" style="justify-content:flex-end;margin-top:12px">
+      <button class="btn" id="aiCancel">取消</button>
+      <button class="btn primary" id="aiOk">添加并同步行情</button>
+    </div>`);
+  let typ = "stock";
+  $$("#aiType button").forEach(b => b.onclick = () => {
+    typ = b.dataset.k; $$("#aiType button").forEach(x => x.classList.toggle("on", x === b));
+  });
+  $("#aiCancel").onclick = closeModal;
+  const codeEl = $("#aiCode");
+  codeEl.focus();
+  $("#aiOk").onclick = async () => {
+    const code = (codeEl.value || "").trim();
+    if (!code) return ($("#aiMsg").textContent = "请先填代码");
+    const btn = $("#aiOk"); btn.disabled = true; btn.textContent = "添加中…（拉日K）";
+    $("#aiMsg").textContent = "";
+    try {
+      const r = await post("/api/watchlist_add", {
+        code, name: ($("#aiName").value || "").trim(),
+        sector: ($("#aiSector").value || "").trim(),
+        group: ($("#aiGroup").value || "").trim(), type: typ, sync: true,
+      });
+      if (r.error) throw new Error(r.error);
+      const bad = !!(r.sync && r.sync.error);
+      closeModal();
+      toast(bad
+        ? `已添加 ${r.name}（${r.code}），但行情没拉到：${r.sync.error.slice(0, 40)}…`
+        : `${r.revived ? "已恢复" : "已添加"} ${r.name}（${r.code}）· K线 ${r.sync ? (r.sync.rows || 0) : 0} 根`
+          + (r.primary_index ? " · 主指数已挂接" : ""), bad);
+      onDone && onDone();
+    } catch (e) {
+      $("#aiMsg").textContent = e.message;
+      btn.disabled = false; btn.textContent = "添加并同步行情";
+    }
+  };
+}
+
+function confirmRemoveInstrument(code, name, onDone) {
+  openModal(`
+    <h3>从自选移除 · ${esc(name || code)}</h3>
+    <div class="sub">移除是<b>软删</b>，不会丢数据：</div>
+    <div class="tiny" style="line-height:1.9;margin:8px 0 4px">
+      · 它不再出现在看板 / 日报 / 清单 / 线上快照里，也不再产生提醒；<br>
+      · 已录的颈线 / 目标 / 结构轮次 / 历史日K <b>都保留</b>；<br>
+      · 以后再加回来（同一个代码），价位和历史会自动接上，不用重画。
+    </div>
+    <div class="tiny" style="color:var(--warn)">基准指数不支持移除。</div>
+    <div class="toolbar" style="justify-content:flex-end;margin-top:14px">
+      <button class="btn" id="rmCancel">取消</button>
+      <button class="btn danger" id="rmOk">确认移除</button>
+    </div>`);
+  $("#rmCancel").onclick = closeModal;
+  $("#rmOk").onclick = async () => {
+    try {
+      const r = await post("/api/watchlist_remove", { code });
+      if (r.error) throw new Error(r.error);
+      closeModal();
+      toast(`已移除 ${name || code}（数据保留，可随时加回）`);
+      onDone && onDone();
+    } catch (e) { toast("移除失败：" + e.message, true); }
+  };
+}
+
 /* ---------------- 盘中预演（只读影子） ----------------
    三条约束，改的时候别破坏：
     ① 预演的每一处输出都必须带「预演」前缀 —— 前缀由 CSS ::before 出，页面想漏都漏不掉。
