@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>标的详情 · 仓位管家</title>
-<link rel="stylesheet" href="assets/app.css?v=20260916172250">
+<link rel="stylesheet" href="assets/app.css?v=20260916233028">
 <style>
   .chartwrap { position: relative; }
   #chart { width: 100%; height: 560px; }
@@ -37,6 +37,7 @@
       <h1 id="nm">…</h1>
       <span class="sub" id="sub"></span>
       <span class="right toolbar">
+        <span id="pvSlot"></span>
         <button class="btn sm ghost" id="btnLabel">设方向</button>
         <button class="btn sm ghost" id="btnReplay">回放</button>
         <button class="btn sm" id="btnEvalOne">评估</button>
@@ -49,7 +50,7 @@
     <div class="card" style="margin-bottom:16px">
       <div class="card-h">
         <h2>结构图</h2>
-        <span class="sub">日线收盘价判定 · 盘中数据物理隔离</span>
+        <span class="sub">日线收盘价判定 · 盘中数据物理隔离（图中蓝线为预演，不落库）</span>
         <span class="right toolbar">
           <span class="seg" id="toolSeg">
             <button data-t="none" class="on">浏览</button>
@@ -71,6 +72,7 @@
           <span><i style="border-top:2px dotted #94A3B8"></i>失效线</span>
           <span><i style="border-top:2px dashed #F59E0B"></i>买卖区间</span>
           <span><i style="border-top:2px dotted #0EA5E9"></i>哨兵</span>
+          <span><i style="border-top:2px dashed #0284C7"></i>预演价（盘中）</span>
         </div>
         <div class="tiny" id="hint" style="margin-left:auto"></div>
       </div>
@@ -93,12 +95,13 @@
 
 <div class="modal" id="modal"><div class="box" id="modalBox"></div></div>
 
-<script src="vendor/klinecharts.min.js?v=20260916172250"></script>
-<script src="data/data.js?v=20260916172250"></script>
-<script src="assets/app.js?v=20260916172250"></script>
+<script src="vendor/klinecharts.min.js?v=20260916233028"></script>
+<script src="data/data.js?v=20260916233028"></script>
+<script src="assets/app.js?v=20260916233028"></script>
 <script>
 const CODE = qs("code");
 let D = null, chart = null, BARS = [];
+let PV_STOP = null;   // 盘中预演的轻量轮询句柄
 let tool = "none", stage = 0, draft = null, dragIdx = -1, cursor = null;
 
 /* ============================ 图表 ============================ */
@@ -235,6 +238,19 @@ function drawOverlay() {
     P.push(`<text x="${W - 60}" y="${p.y + 3.5}" fill="#0EA5E9" font-size="11"
       font-family="ui-monospace,Consolas,monospace">哨兵 ${n(s.price, 2)}</text>`);
   });
+
+  /* --- 盘中预演价：蓝点划线，标签放**左侧** ---
+     其他所有价位的标签都在右边缘（x=W-60），预演单独放左边，一眼就知道不是一类东西。 */
+  const PV = D && D.preview;
+  if (PV && PV.active && PV.price) {
+    const p = px(ts, PV.price);
+    if (p) {
+      P.push(`<line x1="0" y1="${p.y}" x2="${W - 64}" y2="${p.y}" stroke="#0284C7"
+        stroke-width="1" stroke-dasharray="9 3 2 3"/>`);
+      P.push(`<text x="6" y="${p.y - 5}" fill="#0284C7" font-size="11"
+        font-family="ui-monospace,Consolas,monospace">预演 ${n(PV.price, 2)}</text>`);
+    }
+  }
 
   /* --- 激活/峰值标记 --- */
   if (D && D.round && D.round.activated_at) {
@@ -463,6 +479,7 @@ function renderHero() {
              <div class="tiny" style="margin-top:4px">完成度 ${n(r.completion, 1)}%　
                ${esc(r.peak_completion != null ? "峰值 " + n(r.peak_completion, 1) + "%" : "")}</div>`
           : `<div class="tiny">${esc(r.neckline ? "等待收盘站上颈线 " + n(r.neckline, 2) : "尚未录价位")}</div>`}
+          <div data-pv="${CODE}">${pvHtml(D.preview)}</div>
         </div>
       </div>
       <div style="min-width:150px">
@@ -657,6 +674,16 @@ async function load() {
   $("#btnLabel").onclick = () => pickLabel({
     code: CODE, name: it.name, direction_label: it.direction_label,
     pool: it.pool, sub_status: it.sub_status }, load);
+
+  /* 盘中预演：徽章 + 轻量轮询。onItems 只改 D.preview 并重画覆盖层，
+     不重跑 load() —— 那会重算结构（sync_round 会写库）。 */
+  paintPreviewBadge(d.session);
+  if (!PV_STOP) PV_STOP = startPreviewPoll(d.session, items => {
+    D.preview = items[CODE] || null;
+    paintPreviews(items);
+    drawOverlay();
+  });
+
   if (d.empty) {
     $("#hero").innerHTML = emptyBox("尚无行情数据，请先点右上角「同步日K」");
     ["structCard", "ruleCard", "candCard", "sigCard"].forEach(x => $("#" + x).innerHTML = "");

@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>看板 · 仓位管家</title>
-<link rel="stylesheet" href="assets/app.css?v=20260916172250">
+<link rel="stylesheet" href="assets/app.css?v=20260916233028">
 </head>
 <body>
 <div class="app">
@@ -15,6 +15,7 @@
       <h1>看板</h1>
       <span class="sub" id="pgSub">行情判断由人做，系统只做数学比较与查表</span>
       <span class="right toolbar">
+        <span id="pvSlot"></span>
         <button class="btn sm" id="btnEval">跑一遍评估</button>
         <button class="btn sm primary" id="btnSync">同步日K</button>
       </span>
@@ -83,10 +84,10 @@
   </main>
 </div>
 
-<script src="data/data.js?v=20260916172250"></script>
-<script src="assets/app.js?v=20260916172250"></script>
+<script src="data/data.js?v=20260916233028"></script>
+<script src="assets/app.js?v=20260916233028"></script>
 <script>
-let DATA = null, FILTER = "all";
+let DATA = null, FILTER = "all", POLL = null;
 
 function renderStat(s) {
   const conf = [
@@ -125,6 +126,7 @@ function renderIndex(list) {
       <div class="ft">${chip(x.pct_chg)}
         <span class="tiny mono" style="margin-left:auto">${esc(x.bar || "")}</span></div>
       ${x.quote_time ? `<div class="tiny" style="margin-top:6px">报价 ${esc(x.quote_time)}</div>` : ""}
+      <div data-pv="${x.code}">${pvHtml(x.preview)}</div>
     </div>`).join("");
 }
 
@@ -202,7 +204,8 @@ function renderTable() {
         <div class="cd">${esc(r.date || "")}</div></td>
       <td>${chip(r.pct_chg)}<div class="tiny">${esc(r.phase_cn || "")}</div></td>
       <td>${bar(r.bar_kind, r.bar_val)}
-        <div class="tiny mono" style="margin-top:4px">${esc(r.bar_label || "")}</div></td>
+        <div class="tiny mono" style="margin-top:4px">${esc(r.bar_label || "")}</div>
+        <div data-pv="${r.code}">${pvHtml(r.preview)}</div></td>
       <td class="wait">${esc(r.waiting || "")}</td>
       <td style="text-align:right">${r.bw_pct != null
         ? `<div style="display:flex;align-items:center;gap:6px;justify-content:flex-end">
@@ -224,6 +227,10 @@ async function load() {
   renderStat(d.stat); renderIndex(d.index_band); renderAlerts(d.alerts);
   renderSentinels(d.sentinels); renderTable(); paintFoot(d.meta);
   bindLabelPicker(d, load);
+  /* 盘中预演：徽章 + 轻量轮询（只打 /api/preview，不重算结构） */
+  const sess = (d.meta || {}).session;
+  paintPreviewBadge(sess);
+  if (!POLL) POLL = startPreviewPoll(sess, paintPreviews);
   const latest = (d.index_band || []).map(x => x.quote_time).filter(Boolean)[0];
   $("#pgSub").textContent = latest
     ? `报价时间 ${latest} · 数据 ${d.meta.latest_bar || "—"}`

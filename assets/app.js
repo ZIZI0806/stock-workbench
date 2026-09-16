@@ -313,6 +313,60 @@ function pickLabel(inst, onDone) {
   };
 }
 
+/* ---------------- 盘中预演（只读影子） ----------------
+   三条约束，改的时候别破坏：
+    ① 预演的每一处输出都必须带「预演」前缀 —— 前缀由 CSS ::before 出，页面想漏都漏不掉。
+    ② 轮询只打 /api/preview（纯算术、零写入）。**绝不能改打 /api/dashboard** ——
+       后者每行都跑 sync_round()，会 UPDATE structure_rounds，20 秒一次等于 20 秒写一次库。
+    ③ 线上快照不轮询（没有后端）；页面切到后台自动暂停。 */
+function pvHtml(pv) {
+  if (!pv || !pv.active) return "";
+  const cls = ["pv", pv.changed ? "chg" : (pv.tone || "")].filter(Boolean).join(" ");
+  const tip = (pv.phase_cn || "") + (pv.time ? " · 报价 " + pv.time : "");
+  return `<div class="${cls}" title="${esc(tip)}">${esc(pv.note)}</div>`;
+}
+
+function paintPreviewBadge(sess) {
+  const el = $("#pvSlot");
+  if (!el) return;
+  if (STATIC_MODE) { el.innerHTML = ""; return; }   // 快照里没有盘中概念，不显示
+  if (!sess) { el.innerHTML = ""; return; }
+  if (!sess.enabled)
+    el.innerHTML = `<span class="pv-badge off" title="已在「参数与运维」里关闭盘中预演">预演已关闭</span>`;
+  else if (!sess.in_session)
+    el.innerHTML = `<span class="pv-badge off" title="非交易时段不产生预演">${esc(sess.why || "")}</span>`;
+  else
+    el.innerHTML = `<span class="pv-badge" title="交易时段：用实时价算出的「如果现在就收盘」影子。不落库、不产生信号。">
+      <i></i>盘中预演 · <b id="pvClock">${esc(sess.now || "--:--:--")}</b></span>`;
+}
+
+/* 局部刷新页面上所有 [data-pv] 容器 */
+function paintPreviews(items) {
+  if (!items) return;
+  $$("[data-pv]").forEach(el => { el.innerHTML = pvHtml(items[el.dataset.pv]); });
+}
+
+/* 轻量轮询。onItems(items, session) 由页面决定怎么用。返回 stop() */
+function startPreviewPoll(sess, onItems) {
+  if (STATIC_MODE) return () => {};                       // 线上快照没有后端
+  if (!sess || !sess.preview_on) return () => {};         // 非交易时段/未启用
+  const sec = Number(sess.refresh_sec || 0);
+  if (!sec || sec < 5) return () => {};                   // 0 = 用户关了自动刷新
+
+  const tick = async () => {
+    if (document.visibilityState === "hidden") return;    // 后台不刷
+    try {
+      const r = await api("/api/preview");
+      const s = r.session || sess;
+      const c = $("#pvClock");
+      if (c && s.now) c.textContent = s.now;
+      onItems && onItems(r.items || {}, s);
+    } catch (e) { /* 单次失败不打断，下一轮再试 */ }
+  };
+  const t = setInterval(tick, sec * 1000);
+  return () => clearInterval(t);
+}
+
 /* ---------------- 只读快照：把写操作入口收起来 ---------------- */
 if (STATIC_MODE && typeof document !== "undefined") {
   const mark = () => document.body && document.body.classList.add("readonly");
