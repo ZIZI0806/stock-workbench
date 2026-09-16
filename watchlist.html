@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>自选股 · 仓位管家</title>
+<link rel="stylesheet" href="assets/app.css?v=20260917001041">
+</head>
+<body>
+<div class="app">
+  <aside class="side" id="side"></aside>
+  <main class="main">
+
+    <div class="page-h">
+      <h1>自选股</h1>
+      <span class="sub" id="pgSub">加进来就会自动联动到看板 / 日报 / 突破 / 头部</span>
+      <span class="right toolbar">
+        <span id="pvSlot"></span>
+        <button class="btn sm" id="btnEval">跑一遍评估</button>
+        <button class="btn sm primary" id="btnSync">同步日K</button>
+      </span>
+    </div>
+
+    <!-- 加：搜全市场（沪深个股 / ETF·基金 / 指数） -->
+    <div class="card" id="addCard" style="margin-bottom:20px">
+      <div class="card-h">
+        <h2>添加标的</h2>
+        <span class="sub">沪深个股 · ETF/基金 · 指数 —— 搜代码、名称或拼音首字母</span>
+        <span class="right"><button class="btn sm primary" id="btnAdd">+ 添加自选</button></span>
+      </div>
+      <input id="kw" class="mono" style="width:100%;margin-top:4px"
+             placeholder="茅台 / 600519 / GZMT / 沪深300ETF / 159915" autocomplete="off">
+      <div id="kwPanel" class="sympanel"></div>
+      <div class="tiny" style="margin-top:8px">
+        加进来会顺手<b>拉日K + 跑一次评估</b>，所以会慢一两秒；
+        之后它就会出现在看板的态势列表、每日报告的「观察池其余」、
+        突破确立与头部确立的相应分段里。港股 / 新三板 / 债券不在收录范围。
+      </div>
+    </div>
+
+    <!-- 清单 -->
+    <div class="card pad0">
+      <div class="card-h" style="padding:24px 24px 0;margin-bottom:12px">
+        <h2>在看的标的</h2>
+        <span class="sub" id="listSub"></span>
+        <span class="right">
+          <label class="tiny" style="display:inline-flex;align-items:center;gap:5px;cursor:pointer">
+            <input type="checkbox" id="showRemoved"> 显示已移除
+          </label>
+        </span>
+      </div>
+      <div style="overflow:auto;max-height:70vh">
+        <table class="tbl" id="tbl">
+          <thead><tr>
+            <th>标的</th><th>类型</th><th>方向</th><th style="text-align:right">现价</th>
+            <th style="width:112px">今日</th><th style="width:150px">结构进度</th>
+            <th>在等什么</th><th style="text-align:right">带宽分位</th>
+            <th style="text-align:right">剧本收益</th><th style="width:96px">操作</th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+
+  </main>
+</div>
+
+<script src="data/data.js?v=20260917001041"></script>
+<script src="assets/app.js?v=20260917001041"></script>
+<script>
+let DATA = null, INST = [], SHOW_REMOVED = false, POLL = null;
+
+const TY = { stock: "个股", etf: "ETF/基金", index: "指数" };
+const TY_CHIP = { stock: "gray", etf: "flat", index: "warn" };
+const TY_CN = { stock: "个股", fund: "ETF/基金", index: "指数（基准）" };
+
+function instRow(code) { return (DATA.rows || []).find(r => r.code === code) || null; }
+function idxRow(code) { return (DATA.index_band || []).find(r => r.code === code) || null; }
+
+/* 操作列：在用的可移除；已移除的可加回；基准指数不给移（共振入场要读它的标签） */
+function opCell(x) {
+  if (!x.active)
+    return `<button class="btn sm" data-back="${esc(x.code)}">加回</button>`;
+  if (x.type === "index")
+    return `<span class="tiny" title="共振入场规则要读主指数的方向标签，移掉会让挂在它上面的个股失去基准">基准</span>`;
+  return `<button class="btn sm danger" data-rm="${esc(x.code)}" data-nm="${esc(x.name)}">移除</button>`;
+}
+
+function liveRow(x) {
+  const isIdx = x.type === "index";
+  const r = instRow(x.code), ix = idxRow(x.code);
+  const src = isIdx ? ix : r;
+  const empty = !isIdx && r && r.empty;
+  const close = src ? src.close : null;
+  const pct = src ? src.pct_chg : null;
+  const pv = src ? src.preview : null;
+
+  const barHtml = isIdx
+    ? (ix && ix.bar ? `<span class="mono tiny">${esc(ix.bar)}</span>` : "—")
+    : (r && !empty
+        ? bar(r.bar_kind, r.bar_val) + `<div class="tiny mono" style="margin-top:4px">${esc(r.bar_label || "")}</div>`
+        : "—");
+
+  const waiting = isIdx
+    ? `<span class="muted tiny">基准层 —— 只定方向，不做结构判定</span>`
+    : (empty ? esc(r.waiting) : esc((r && r.waiting) || "—"));
+
+  const bw = (!isIdx && r && r.bw_pct != null)
+    ? `<div style="display:flex;align-items:center;gap:6px;justify-content:flex-end">
+         ${ring(r.bw_pct, 30)}<span class="tiny">${esc(r.bw_state === "low" ? "低温"
+           : r.bw_state === "high" ? "高温" : "常态")}</span></div>`
+    : "—";
+
+  const sc = (!isIdx && r && r.scenario != null)
+    ? `<span class="${pctClass(r.scenario)}" style="font-weight:600">${sgn(r.scenario, 1)}</span>`
+    : "—";
+
+  return `<tr data-code="${esc(x.code)}">
+    <td><a href="detail.html?code=${encodeURIComponent(x.code)}"><span class="nm">${esc(x.name)}</span></a>
+      <div class="cd">${esc(x.code)} · ${esc(x.sector || "")}${
+        x.primary_index ? " · 基准 " + esc(x.primary_index) : ""}${
+        x.bars ? "" : " · 无K线，先点右上「同步日K」"}</div></td>
+    <td><span class="chip ${TY_CHIP[x.type] || "gray"}">${esc(TY[x.type] || x.type)}</span>
+      ${x.levels ? `<div class="tiny">${x.levels} 条已确认价位</div>` : ""}</td>
+    <td>${lab(x.direction_label, x.code)}</td>
+    <td class="num" style="text-align:right;font-weight:600">${n(close, 2)}
+      <div class="cd">${esc((src && src.date) || "")}</div></td>
+    <td>${chip(pct)}<div class="tiny">${esc((src && src.phase_cn) || "")}</div></td>
+    <td>${barHtml}</td>
+    <td class="wait">${waiting}<div data-pv="${esc(x.code)}">${pvHtml(pv)}</div></td>
+    <td style="text-align:right">${bw}</td>
+    <td class="num" style="text-align:right">${sc}</td>
+    <td>${opCell(x)}</td>
+  </tr>`;
+}
+
+function goneRow(x) {
+  return `<tr data-code="${esc(x.code)}" data-gone="1" style="opacity:.6">
+    <td><span class="nm">${esc(x.name)}</span><div class="cd">${esc(x.code)}</div></td>
+    <td><span class="chip ${TY_CHIP[x.type] || "gray"}">${esc(TY[x.type] || x.type)}</span></td>
+    <td colspan="7"><span class="tiny muted">已移除 —— 价位 / 结构轮次 / 历史日K / 哨兵记录都还在，
+      点「加回」会原样接上，不用重画</span></td>
+    <td>${opCell(x)}</td>
+  </tr>`;
+}
+
+function render() {
+  const live = INST.filter(x => x.active);
+  const gone = INST.filter(x => !x.active);
+  const nEtf = live.filter(x => x.type === "etf").length;
+  const nIdx = live.filter(x => x.type === "index").length;
+  $("#listSub").textContent = `在看 ${live.length} 只（个股 ${live.length - nEtf - nIdx} · `
+    + `ETF ${nEtf} · 指数 ${nIdx}）` + (gone.length ? ` · 已移除 ${gone.length} 只` : "");
+
+  const tb = $("#tbl tbody");
+  if (!INST.length)
+    return tb.innerHTML =
+      `<tr><td colspan="10">${emptyBox("自选是空的 —— 用上面的搜索框加一只试试")}</td></tr>`;
+  tb.innerHTML = INST.map(x => x.active ? liveRow(x) : goneRow(x)).join("");
+
+  $$("#tbl [data-rm]").forEach(b => b.onclick = e => {
+    e.stopPropagation();
+    confirmRemoveInstrument(b.dataset.rm, b.dataset.nm, load);
+  });
+  $$("#tbl [data-back]").forEach(b => b.onclick = async e => {
+    e.stopPropagation();
+    const x = INST.find(i => i.code === b.dataset.back);
+    b.disabled = true; b.textContent = "加回中…";
+    try {
+      const r = await post("/api/watchlist_add", {
+        code: b.dataset.back, name: x ? x.name : "",
+        type: x ? x.type : "stock", sync: true });
+      if (r.error) throw new Error(r.error);
+      toast(`已加回 ${r.name}（${r.code}）`);
+      await load();
+    } catch (err) {
+      toast("加回失败：" + err.message, true);
+      b.disabled = false; b.textContent = "加回";
+    }
+  });
+  $$("#tbl tbody tr[data-code]").forEach(tr => tr.onclick = e => {
+    if (e.target.closest("a,button") || tr.dataset.gone) return;
+    location.href = "detail.html?code=" + encodeURIComponent(tr.dataset.code);
+  });
+}
+
+async function addFrom(x) {
+  const p = $("#kwPanel");
+  p.innerHTML = `<div class="tiny" style="padding:8px 2px">正在添加 ${esc(x.name)} …（拉日K + 跑评估）</div>`;
+  try {
+    const r = await post("/api/watchlist_add", {
+      code: x.full, name: x.name,
+      type: x.kind === "index" ? "index" : (x.kind === "fund" ? "etf" : "stock"),
+      sync: true });
+    if (r.error) throw new Error(r.error);
+    const bad = !!(r.sync && r.sync.error);
+    toast(bad
+      ? `已添加 ${r.name}（${r.code}），但行情没拉到：${String(r.sync.error).slice(0, 40)}…`
+      : `${r.revived ? "已加回" : "已添加"} ${r.name}（${r.code}）· K线 ${(r.sync && r.sync.rows) || 0} 根`,
+      bad);
+    $("#kw").value = ""; p.innerHTML = "";
+    await load();
+  } catch (e) {
+    p.innerHTML = `<div class="tiny" style="padding:8px 2px;color:var(--warn)">添加失败：${esc(e.message)}</div>`;
+  }
+}
+
+async function load() {
+  const d = await api("/api/dashboard");
+  DATA = d;
+  const ins = await api("/api/instruments" + (SHOW_REMOVED ? "?include_removed=1" : ""));
+  INST = ins.items || [];
+  render();
+  paintFoot(d.meta);
+  /* 清单里的方向徽章也要能点着改 —— 把 instruments 当作 items 传进去，
+     bindLabelPicker 认 direction_label 字段（老快照缺 label 时也兜得住）。 */
+  bindLabelPicker({ rows: d.rows, index_band: d.index_band, items: INST }, load);
+  const sess = (d.meta || {}).session;
+  paintPreviewBadge(sess);
+  if (!POLL) POLL = startPreviewPoll(sess, paintPreviews);
+  const latest = (d.index_band || []).map(x => x.quote_time).filter(Boolean)[0];
+  $("#pgSub").textContent = latest
+    ? `报价时间 ${latest} · 数据 ${d.meta.latest_bar || "—"}`
+    : "加进来就会自动联动到看板 / 日报 / 突破 / 头部";
+}
+
+$("#showRemoved").onchange = e => { SHOW_REMOVED = e.target.checked; load(); };
+$("#btnAdd").onclick = () => openAddInstrument(load);
+$("#btnEval").onclick = async () => {
+  const b = $("#btnEval"); b.disabled = true; b.textContent = "评估中…";
+  try { const r = await post("/api/evaluate", {});
+        toast(`评估完成，信号 ${r.signals != null ? r.signals : 0} 条`); await load(); }
+  catch (e) { toast("评估失败：" + e.message, true); }
+  finally { b.disabled = false; b.textContent = "跑一遍评估"; }
+};
+$("#btnSync").onclick = async () => {
+  const b = $("#btnSync"); b.disabled = true; b.textContent = "同步中…";
+  try {
+    const r = await post("/api/sync", {});
+    const bad = (r.results || []).filter(x => x.error);
+    toast(bad.length ? `同步完成，${bad.length} 只失败` : "同步完成", !!bad.length);
+    await load();
+  } catch (e) { toast("同步失败：" + e.message, true); }
+  finally { b.disabled = false; b.textContent = "同步日K"; }
+};
+
+bindSymbolPicker($("#kw"), $("#kwPanel"), x => {
+  if (x.in_list && !x.revive) return toast(`${x.name} 已经在自选里了`);
+  addFrom(x);
+});
+
+mountNav("/watchlist");
+load().catch(e => { toast("加载失败：" + e.message, true); $("#pgSub").textContent = e.message; });
+</script>
+</body>
+</html>

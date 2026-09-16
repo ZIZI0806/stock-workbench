@@ -163,11 +163,12 @@ function bar(kind, val) {
 /* href 用相对路径 + .html：GitHub Pages 项目站挂在 /<repo>/ 子路径下，绝对路径会 404；
    相对路径下本机 Python 服务（页都在根）同样能跑。active 仍用原逻辑路径作 key。 */
 const NAV = [
-  { key: "/",          href: "index.html",    ic: "◱", tx: "看板" },
-  { key: "/report",    href: "report.html",   ic: "☰", tx: "每日报告" },
-  { key: "/breakout",  href: "breakout.html", ic: "▲", tx: "突破确立" },
-  { key: "/top",       href: "top.html",      ic: "▼", tx: "头部确立" },
-  { key: "/settings",  href: "settings.html", ic: "⚙", tx: "参数与运维" },
+  { key: "/",          href: "index.html",     ic: "◱", tx: "看板" },
+  { key: "/watchlist", href: "watchlist.html", ic: "★", tx: "自选股" },
+  { key: "/report",    href: "report.html",    ic: "☰", tx: "每日报告" },
+  { key: "/breakout",  href: "breakout.html",  ic: "▲", tx: "突破确立" },
+  { key: "/top",       href: "top.html",       ic: "▼", tx: "头部确立" },
+  { key: "/settings",  href: "settings.html",  ic: "⚙", tx: "参数与运维" },
 ];
 function mountNav(active, meta) {
   const side = $("#side");
@@ -313,65 +314,138 @@ function pickLabel(inst, onDone) {
   };
 }
 
-/* ---------------- 自选股：加 / 移除 ----------------
-   后端语义要记住两条，UI 文案也照这个说：
+/* ---------------- 自选股：搜索 / 加 / 移除 ----------------
+   后端语义要记住三条，UI 文案也照这个说：
     ① 移除是**软删**（active=0）—— 历史价位/信号/哨兵/日K 都不删，再加回来就都还在。
     ② 加自选时后端会顺手解析名称 → 挂主指数 → 拉日K → 跑一次评估，所以会慢一两秒。
-   基准指数不允许移除（共振入场要读它的方向标签）。 */
+       跑完这一趟，看板 / 日报 / 突破确立 / 头部确立 四个页面立刻就有它了。
+    ③ 基准指数不允许移除（共振入场要读它的方向标签）。
+   搜索走 /api/symbol_search：覆盖沪深个股、ETF/基金、指数；港股与新三板由后端滤掉。 */
+
+const KIND_CHIP = { stock: "gray", fund: "flat", index: "warn" };
+
+function symbolSearch(kw) {
+  return api("/api/symbol_search?q=" + encodeURIComponent(kw)).then(r => r.items || []);
+}
+
+/* 候选行。in_list / revive 由后端给：已在自选 / 可加回 / 全新 —— 三种按钮形态。 */
+function symRows(items) {
+  if (!items.length)
+    return `<div class="tiny" style="padding:8px 2px">没有匹配的沪深标的（港股、新三板、债券不在范围内）</div>`;
+  return items.map((x, i) => `<div class="sym" data-i="${i}">
+      <span class="mono cd">${esc(x.full)}</span>
+      <b>${esc(x.name)}</b>
+      <span class="chip ${KIND_CHIP[x.kind] || "gray"}">${esc(x.kind_cn)}</span>
+      <span class="tiny">${esc(x.pinyin || "")}</span>
+      <span class="act">${x.in_list
+        ? (x.revive ? `<button class="btn sm ghost" data-rev="${i}">加回</button>`
+                    : `<span class="tiny">已在自选</span>`)
+        : `<button class="btn sm primary" data-add="${i}">+ 添加</button>`}</span>
+    </div>`).join("");
+}
+
+/* 输入即搜：防抖 280ms + 请求序号防乱序回包（慢的那次不能覆盖快的） */
+function bindSymbolPicker(input, panel, onPick) {
+  let timer = null, seq = 0;
+  input.oninput = () => {
+    clearTimeout(timer);
+    const kw = (input.value || "").trim();
+    if (!kw) { panel.innerHTML = ""; return; }
+    timer = setTimeout(async () => {
+      const mine = ++seq;
+      panel.innerHTML = `<div class="tiny" style="padding:8px 2px">搜索中…</div>`;
+      let items = [];
+      try { items = await symbolSearch(kw); }
+      catch (e) {
+        if (mine === seq) panel.innerHTML =
+          `<div class="tiny" style="padding:8px 2px">搜索失败：${esc(e.message)}</div>`;
+        return;
+      }
+      if (mine !== seq) return;
+      panel.innerHTML = symRows(items);
+      $$(".sym [data-add], .sym [data-rev]", panel).forEach(b => b.onclick = e => {
+        e.stopPropagation();
+        onPick(items[Number(b.closest(".sym").dataset.i)]);
+      });
+    }, 280);
+  };
+}
+
 function openAddInstrument(onDone) {
   openModal(`
     <h3>添加自选股</h3>
-    <div class="sub">填 6 位代码即可（如 <code>600519</code>）。交易所后缀会自动推断；
-      沪市指数请写全 <code>000001.SH</code>（只写 000001 会被当成平安银行）。</div>
-    <div class="field"><label>代码 <span class="tiny">必填</span></label>
-      <input id="aiCode" class="mono" placeholder="600519 或 600519.SH" autocomplete="off"></div>
-    <div class="field"><label>名称 <span class="tiny">可留空 —— 留空则自动联网取</span></label>
-      <input id="aiName" placeholder="贵州茅台" autocomplete="off"></div>
-    <div class="field"><label>板块 <span class="tiny">可留空，仅用于展示</span></label>
-      <input id="aiSector" placeholder="白酒" autocomplete="off"></div>
-    <div class="field"><label>分组 <span class="tiny">可留空</span></label>
-      <input id="aiGroup" placeholder="比如：新关注" autocomplete="off"></div>
-    <div class="field"><label>类型</label>
-      <div class="lvlpick" id="aiType" style="grid-template-columns:repeat(2,1fr)">
-        <button data-k="stock" class="on">个股</button>
-        <button data-k="index">指数（基准）</button>
+    <div class="sub">搜代码 / 名称 / 拼音首字母 —— 沪深个股与 ETF 都能加。
+      加进来会顺手拉日K并跑一次评估，看板 / 日报 / 突破确立 / 头部确立立刻就有它。</div>
+    <div class="field"><label>搜索</label>
+      <input id="aiQ" placeholder="茅台 / 600519 / GZMT / 沪深300ETF" autocomplete="off">
+      <div id="aiPanel" class="sympanel"></div></div>
+    <details class="fold"><summary>搜不到？手动填代码</summary>
+      <div class="field"><label>代码</label>
+        <input id="aiCode" class="mono" placeholder="600519 或 600519.SH" autocomplete="off"></div>
+      <div class="field"><label>板块 <span class="tiny">可留空，仅用于展示</span></label>
+        <input id="aiSector" placeholder="白酒" autocomplete="off"></div>
+      <div class="field"><label>类型</label>
+        <div class="lvlpick" id="aiType" style="grid-template-columns:repeat(3,1fr)">
+          <button data-k="stock" class="on">个股</button>
+          <button data-k="etf">ETF/基金</button>
+          <button data-k="index">指数（基准）</button>
+        </div>
+        <div class="tiny" style="margin-top:4px">指数只进基准带，不参与结构判定；
+          沪市指数要写全 <code>000001.SH</code>（只写 000001 会被当成平安银行）。</div></div>
+      <div class="toolbar" style="justify-content:flex-end;margin-top:8px">
+        <button class="btn primary" id="aiOk">添加并同步行情</button>
       </div>
-      <div class="tiny" style="margin-top:4px">指数只进基准带，不参与结构判定。</div></div>
-    <div class="tiny" id="aiMsg" style="min-height:18px;color:var(--warn)"></div>
-    <div class="toolbar" style="justify-content:flex-end;margin-top:12px">
-      <button class="btn" id="aiCancel">取消</button>
-      <button class="btn primary" id="aiOk">添加并同步行情</button>
+    </details>
+    <div class="tiny" id="aiMsg" style="min-height:18px;color:var(--warn);margin-top:6px"></div>
+    <div class="toolbar" style="justify-content:flex-end;margin-top:6px">
+      <button class="btn" id="aiClose">关闭</button>
     </div>`);
-  let typ = "stock";
-  $$("#aiType button").forEach(b => b.onclick = () => {
-    typ = b.dataset.k; $$("#aiType button").forEach(x => x.classList.toggle("on", x === b));
-  });
-  $("#aiCancel").onclick = closeModal;
-  const codeEl = $("#aiCode");
-  codeEl.focus();
-  $("#aiOk").onclick = async () => {
-    const code = (codeEl.value || "").trim();
-    if (!code) return ($("#aiMsg").textContent = "请先填代码");
-    const btn = $("#aiOk"); btn.disabled = true; btn.textContent = "添加中…（拉日K）";
-    $("#aiMsg").textContent = "";
+
+  const msg = m => ($("#aiMsg").textContent = m || "");
+  const busy = on => {
+    const b = $("#aiOk");
+    if (b) { b.disabled = on; b.textContent = on ? "添加中…（拉日K）" : "添加并同步行情"; }
+  };
+
+  /* 搜索添加与手动添加共用这一段 —— 两条路的后处理必须一模一样，
+     否则会出现「搜着加能联动、手填加不联动」这种自相矛盾的行为。 */
+  async function doAdd(payload) {
+    msg(""); busy(true);
     try {
-      const r = await post("/api/watchlist_add", {
-        code, name: ($("#aiName").value || "").trim(),
-        sector: ($("#aiSector").value || "").trim(),
-        group: ($("#aiGroup").value || "").trim(), type: typ, sync: true,
-      });
+      const r = await post("/api/watchlist_add", Object.assign({ sync: true }, payload));
       if (r.error) throw new Error(r.error);
       const bad = !!(r.sync && r.sync.error);
+      const rows = r.sync ? (r.sync.rows || 0) : 0;
       closeModal();
       toast(bad
-        ? `已添加 ${r.name}（${r.code}），但行情没拉到：${r.sync.error.slice(0, 40)}…`
-        : `${r.revived ? "已恢复" : "已添加"} ${r.name}（${r.code}）· K线 ${r.sync ? (r.sync.rows || 0) : 0} 根`
-          + (r.primary_index ? " · 主指数已挂接" : ""), bad);
+        ? `已添加 ${r.name}（${r.code}），但行情没拉到：${String(r.sync.error).slice(0, 40)}…`
+        : `${r.revived ? "已加回" : "已添加"} ${r.name}（${r.code}）· K线 ${rows} 根`
+          + " · 看板 / 日报 / 突破 / 头部已同步", bad);
       onDone && onDone();
     } catch (e) {
-      $("#aiMsg").textContent = e.message;
-      btn.disabled = false; btn.textContent = "添加并同步行情";
+      msg(e.message);
+      busy(false);
     }
+  }
+
+  $$("#aiType button").forEach(b => b.onclick = () => {
+    $$("#aiType button").forEach(x => x.classList.toggle("on", x === b));
+  });
+  $("#aiClose").onclick = closeModal;
+
+  const q = $("#aiQ");
+  bindSymbolPicker(q, $("#aiPanel"), x => {
+    if (x.in_list && !x.revive) return toast(`${x.name} 已经在自选里了`);
+    doAdd({ code: x.full, name: x.name,
+            type: x.kind === "index" ? "index" : (x.kind === "fund" ? "etf" : "stock") });
+  });
+  q.focus();
+
+  $("#aiOk").onclick = () => {
+    const code = ($("#aiCode").value || "").trim();
+    if (!code) return msg("请先填代码");
+    const on = $("#aiType button.on");
+    doAdd({ code, sector: ($("#aiSector").value || "").trim(), type: on ? on.dataset.k : "stock" });
   };
 }
 

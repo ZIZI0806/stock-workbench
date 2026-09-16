@@ -120,6 +120,22 @@ button { font-family: inherit; cursor: pointer; }
 .pri.p2 { background: var(--warn); color: #fff; }
 .pri.p3 { background: #DBEAFE; color: #1D4ED8; }
 .pri.p4 { background: var(--bg); color: var(--t2); }
+/* P5 = 日报第五档「观察池其余」：不是规则优先级，只是个档位标记，所以最淡 */
+.pri.p5 { background: var(--bg); color: var(--t3); }
+
+/* ---- 加自选的搜索候选行（弹窗与自选股页共用） ---- */
+.sympanel { margin-top: 8px; }
+.sympanel:empty { display: none; }
+.sym { display: flex; align-items: center; gap: 10px; padding: 8px 10px;
+  border: 1px solid var(--line); border-radius: 10px; margin-bottom: 6px; background: var(--card); }
+.sym:hover { border-color: var(--primary); box-shadow: var(--sh1); }
+.sym b { font-size: 13px; }
+.sym .cd { min-width: 88px; color: var(--t2); font-size: 12px; }
+.sym .act { margin-left: auto; }
+.fold { margin-top: 12px; }
+.fold > summary { cursor: pointer; font-size: 12.5px; color: var(--t2); padding: 4px 0; }
+.fold > summary:hover { color: var(--t1); }
+.fold[open] > summary { margin-bottom: 6px; }
 
 .muted { color: var(--t2); }
 .tiny { font-size: 11.5px; color: var(--t3); }
@@ -328,7 +344,10 @@ body.readonly [data-set], body.readonly #btnAcceptPair,
 body.readonly #mOk, body.readonly #btnLabel,
 /* 自选增删在线上无后端可写：按钮与"移除/加回"一律藏掉 */
 body.readonly #btnAddWatch, body.readonly #btnAddInst, body.readonly [data-rm],
-body.readonly [data-add], body.readonly #showRemoved { display: none !important; }
+body.readonly [data-add], body.readonly [data-rev], body.readonly [data-back],
+body.readonly #showRemoved { display: none !important; }
+/* 自选股页的「添加标的」整张卡在线上没有意义（搜到了也加不进去），整块藏掉 */
+body.readonly #addCard { display: none !important; }
 /* 快照里没有「盘中」这回事：预演徽章与预演行一律不显示 */
 body.readonly .pv-badge, body.readonly .pv { display: none !important; }
 
