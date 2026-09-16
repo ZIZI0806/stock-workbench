@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>每日报告 · 仓位管家</title>
+<link rel="stylesheet" href="assets/app.css?v=20260916172250">
+</head>
+<body>
+<div class="app">
+  <aside class="side" id="side"></aside>
+  <main class="main">
+
+    <div class="page-h">
+      <h1>每日报告</h1>
+      <span class="sub" id="sub">五档硬排序 · 只列要点，不复述附件</span>
+      <span class="right toolbar">
+        <button class="btn sm" id="btnCopy">复制文本版</button>
+        <button class="btn sm primary" id="btnEval">重跑评估</button>
+      </span>
+    </div>
+
+    <div class="card" style="margin-bottom:16px" id="idxCard">
+      <div class="card-h"><h2>指数基准</h2>
+        <span class="sub">主指数方向标签决定个股规则闸门</span></div>
+      <div id="indices"></div>
+    </div>
+
+    <div id="tiers"></div>
+
+  </main>
+</div>
+
+<script src="data/data.js?v=20260916172250"></script>
+<script src="assets/app.js?v=20260916172250"></script>
+<script>
+let R = null;
+
+function renderIdx(list) {
+  $("#indices").innerHTML = list.map(x => `
+    <div class="kv" style="padding:9px 0">
+      <span class="k" style="min-width:110px"><b>${esc(x.name)}</b> ${lab2(x.label_cn)}</span>
+      <span class="v" style="flex:1;display:flex;align-items:center;gap:14px">
+        <span class="${pctClass(x.pct_chg)}" style="font-weight:600;min-width:80px">${n(x.close, 2)}
+          <span class="tiny">${sgn(x.pct_chg, 2)}</span></span>
+        <span class="mono" style="color:var(--t2)">${esc(x.bar || "")}</span>
+      </span>
+    </div>`).join("");
+}
+function lab2(cn) {
+  const map = { "右侧": "right", "筑底": "base", "左侧": "left", "未定": "undecided" };
+  const k = map[cn] || "undecided";
+  return `<span class="lab ${k}">${esc(cn || "未定")}</span>`;
+}
+
+function renderTiers(tiers) {
+  const box = $("#tiers");
+  const total = tiers.reduce((a, t) => a + t.items.length, 0);
+  if (!total) return box.innerHTML = `<div class="card">${emptyBox("今日无信号")}</div>`;
+  box.innerHTML = tiers.map(t => `
+    <div class="tier">
+      <div class="tier-h">
+        <b>${esc(t.name)}</b><span class="cnt">${t.items.length}</span><span class="ln"></span>
+        ${t.no === 1 && t.items.length ? `<span class="chip up">需今日处理</span>` : ""}
+      </div>
+      ${t.items.length ? `<div class="card" style="padding:14px 18px">
+        ${t.items.map(s => `<div class="alert p${s.priority}" style="margin-bottom:8px;box-shadow:none">
+          <div class="h"><span class="pri p${s.priority}">P${s.priority}</span>
+            <b>${esc(s.name)}</b><span class="nm cd">${esc(s.code)}</span>
+            <span class="tiny">${lab2(s.label_cn)}</span>
+            <span class="act">
+              <a class="btn sm ghost" href="detail.html?code=${encodeURIComponent(s.code)}">详情</a></span></div>
+          <div class="h" style="margin:2px 0"><b style="font-size:12.5px">${esc(s.title)}</b></div>
+          ${s.detail ? `<div class="d">${esc(s.detail)}</div>` : ""}
+        </div>`).join("")}
+      </div>` : `<div class="tiny" style="padding-left:2px">—</div>`}
+    </div>`).join("");
+}
+
+function textVersion() {
+  if (!R) return "";
+  const L = [];
+  L.push(`【仓位管家日报】${R.date || ""}`);
+  L.push("");
+  L.push("■ 指数基准");
+  (R.indices || []).forEach(x => L.push(
+    `・${x.name} ${x.label_cn || "未定"}  ${n(x.close, 2)} ${sgn(x.pct_chg, 2)}  ${x.bar || ""}`));
+  L.push("");
+  (R.tiers || []).forEach(t => {
+    if (!t.items.length) return;
+    L.push(`■ ${t.name}（${t.items.length}）`);
+    t.items.forEach(s => {
+      L.push(`・[P${s.priority}] ${s.name} ${s.code} — ${s.title}`);
+      if (s.detail) L.push(`　${s.detail}`);
+    });
+    L.push("");
+  });
+  if (R.has_p1) L.push("⚠ 存在 P1 级别提示，请优先处理。");
+  L.push("");
+  L.push("—— 仓位管家（判断由人做，系统只做数学比较与查表）");
+  return L.join("\n");
+}
+
+async function load() {
+  const r = await api("/api/report");
+  R = r;
+  $("#sub").textContent = `${r.date || "—"} · 五档硬排序 · 只列要点`;
+  renderIdx(r.indices || []); renderTiers(r.tiers || []);
+}
+$("#btnCopy").onclick = () => { const t = textVersion(); copyText(t); };
+$("#btnEval").onclick = async () => {
+  const b = $("#btnEval"); b.disabled = true; b.textContent = "评估中…";
+  try { await post("/api/evaluate", {}); toast("已重跑"); await load(); }
+  catch (e) { toast("失败：" + e.message, true); } finally { b.disabled = false; b.textContent = "重跑评估"; }
+};
+
+mountNav("/report");
+load().catch(e => toast("加载失败：" + e.message, true));
+</script>
+</body>
+</html>

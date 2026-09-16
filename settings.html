@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>参数与运维 · 仓位管家</title>
+<link rel="stylesheet" href="assets/app.css?v=20260916172250">
+</head>
+<body>
+<div class="app">
+  <aside class="side" id="side"></aside>
+  <main class="main">
+
+    <div class="page-h">
+      <h1>参数与运维</h1>
+      <span class="sub">所有阈值集中在此，改完即时生效</span>
+      <span class="right toolbar">
+        <button class="btn sm ghost" id="btnReload">重新载入</button>
+        <button class="btn sm primary" id="btnSave">保存改动</button>
+      </span>
+    </div>
+
+    <div class="grid2" style="align-items:start">
+      <div id="groups"></div>
+      <div>
+        <div class="card" style="margin-bottom:16px">
+          <div class="card-h"><h2>标的清单</h2><span class="sub" id="instSub"></span></div>
+          <div id="insts" style="max-height:420px;overflow:auto"></div>
+        </div>
+        <div class="card" style="margin-bottom:16px">
+          <div class="card-h"><h2>同步日志</h2><span class="sub">最近 80 条</span>
+            <span class="right"><button class="btn sm" id="btnSyncAll">全量同步</button></span></div>
+          <div id="logs" style="max-height:380px;overflow:auto"></div>
+        </div>
+        <div class="card">
+          <div class="card-h"><h2>运维铁律</h2></div>
+          <div class="tiny" style="line-height:1.9">
+            ① 行情判断永远由人做，系统只做数学比较与查表。<br>
+            ② 价位必经界面确认才入库。<br>
+            ③ 信号只用日线收盘价，盘中数据物理隔离。<br>
+            ④ 质地评分只影响排序展示。<br>
+            ⑤ 不接任何交易接口。<br>
+            <span style="color:var(--warn)">核心表已装硬删触发器：物理删除需先打开 <code>allow_hard_delete</code>，属逃生开关，平时保持 0。</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </main>
+</div>
+<script src="data/data.js?v=20260916172250"></script>
+<script src="assets/app.js?v=20260916172250"></script>
+<script>
+let G = {}, CHANGES = {};
+
+function field(r) {
+  const k = r.key, v = r.value;
+  if (r.type === "bool")
+    return `<select data-k="${k}">
+      <option value="1" ${String(v) === "1" ? "selected" : ""}>开（1）</option>
+      <option value="0" ${String(v) !== "1" ? "selected" : ""}>关（0）</option></select>`;
+  return `<input data-k="${k}" value="${esc(v)}" class="mono">`;
+}
+
+function renderGroups() {
+  const keys = Object.keys(G).sort();
+  $("#groups").innerHTML = keys.map(g => `
+    <div class="card" style="margin-bottom:16px" data-g="${esc(g)}">
+      <div class="card-h"><h2>${esc(g)}</h2><span class="sub">${G[g].length} 项</span></div>
+      ${G[g].map(r => `<div class="field">
+        <label>${esc(r.label || r.key)} <code class="tiny">${esc(r.key)}</code></label>
+        ${field(r)}
+        ${r.note ? `<div class="tiny" style="margin-top:4px">${esc(r.note)}</div>` : ""}
+      </div>`).join("")}
+    </div>`).join("");
+  $$("#groups input,#groups select").forEach(el => el.oninput = el.onchange = () => {
+    CHANGES[el.dataset.k] = el.value;
+    $("#btnSave").textContent = `保存改动（${Object.keys(CHANGES).length}）`;
+  });
+}
+
+async function loadSettings() {
+  const r = await api("/api/settings");
+  G = r.groups || {}; CHANGES = {};
+  $("#btnSave").textContent = "保存改动";
+  renderGroups();
+}
+
+async function loadInsts() {
+  const r = await api("/api/instruments");
+  $("#instSub").textContent = `${r.items.length} 个标的（含指数）`;
+  $("#insts").innerHTML = `<table class="tbl mini"><thead><tr>
+    <th>标的</th><th>方向</th><th>池子</th><th style="text-align:right">日K</th></tr></thead><tbody>
+    ${r.items.map(x => `<tr>
+      <td><a href="detail.html?code=${encodeURIComponent(x.code)}"><b>${esc(x.name)}</b></a>
+        <div class="cd">${esc(x.code)} · ${esc(x.sector || "")} · ${esc(x.type === "index" ? "指数" : "")}</div></td>
+      <td>${x.type === "index" ? "—" : lab(x.direction_label)}</td>
+      <td class="tiny">${esc(POOL_CN[x.pool] || x.pool || "—")}
+        ${x.primary_index ? `<div class="cd">主指数 ${esc(x.primary_index)}</div>` : ""}</td>
+      <td class="n" style="text-align:right">${x.bars || 0}</td></tr>`).join("")}
+    </tbody></table>`;
+}
+
+async function loadLogs() {
+  const r = await api("/api/sync_log");
+  if (!r.items.length) return $("#logs").innerHTML = emptyBox("暂无同步记录");
+  $("#logs").innerHTML = `<table class="tbl mini"><thead><tr>
+    <th>时间</th><th>代码</th><th>源</th><th>结果</th></tr></thead><tbody>
+    ${r.items.map(x => `<tr>
+      <td class="tiny">${esc(x.created_at || "")}</td>
+      <td class="cd">${esc(x.code || "")}</td>
+      <td class="tiny">${esc(x.source || "")
+        }${x.from_date ? `<div class="cd">${esc(x.from_date)} ~ ${esc(x.to_date || "")}</div>` : ""}</td>
+      <td class="tiny">${x.ok === 0 ? `<span class="chip up">失败</span> ` : ""}${esc(x.message || "")}
+        ${x.rows ? `<span class="cd">· ${x.rows} 行</span>` : ""}</td></tr>`).join("")}
+    </tbody></table>`;
+}
+
+$("#btnSave").onclick = async () => {
+  const ks = Object.keys(CHANGES);
+  if (!ks.length) return toast("没有改动");
+  try { await post("/api/settings", { changes: CHANGES });
+        toast(`已保存 ${ks.length} 项`); await loadSettings(); } catch (e) { }
+};
+$("#btnReload").onclick = () => loadSettings();
+$("#btnSyncAll").onclick = async () => {
+  const b = $("#btnSyncAll"); b.disabled = true; b.textContent = "同步中…";
+  try { const r = await post("/api/sync", {});
+    const bad = (r.results || []).filter(x => x.error);
+    toast(bad.length ? `完成，${bad.length} 只失败` : "全量同步完成", !!bad.length);
+    await loadLogs(); await loadInsts();
+  } catch (e) { toast("失败：" + e.message, true); }
+  finally { b.disabled = false; b.textContent = "全量同步"; }
+};
+
+mountNav("/settings");
+Promise.all([loadSettings(), loadInsts(), loadLogs()])
+  .catch(e => toast("加载失败：" + e.message, true));
+</script>
+</body>
+</html>

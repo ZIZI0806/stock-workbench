@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>突破确立 · 仓位管家</title>
+<link rel="stylesheet" href="assets/app.css?v=20260916172250">
+</head>
+<body>
+<div class="app">
+  <aside class="side" id="side"></aside>
+  <main class="main">
+
+    <div class="page-h">
+      <h1>突破确立</h1>
+      <span class="sub">首个收盘价站上颈线才算激活 · 盘中不算</span>
+      <span class="right toolbar">
+        <button class="btn sm ghost" id="btnReload">刷新</button>
+        <button class="btn sm primary" id="btnEval">重跑评估</button>
+      </span>
+    </div>
+
+    <div class="statbar" id="sum" style="margin-bottom:20px"></div>
+    <div id="seg1"></div>
+    <div id="seg2"></div>
+    <div id="seg3"></div>
+    <div id="seg4"></div>
+
+  </main>
+</div>
+<script src="data/data.js?v=20260916172250"></script>
+<script src="assets/app.js?v=20260916172250"></script>
+<script>
+let ROWS = [];
+
+function tbl(list, cols, rowFn) {
+  if (!list.length) return `<div class="tiny" style="padding:2px 0 14px;color:var(--t3)">—</div>`;
+  return `<div class="card" style="padding:6px 8px 6px"><div style="overflow:auto"><table class="tbl mini"><thead><tr>
+      ${cols.map(c => `<th ${c[2] ? `style="${c[2]}"` : ""}>${c[1]}</th>`).join("")}
+    </tr></thead><tbody>${list.map(rowFn).join("")}</tbody></table></div></div>`;
+}
+
+function head(title, sub, cnt, tone) {
+  return `<div class="tier-h"><b>${title}</b>
+    <span class="cnt">${cnt}</span>
+    ${tone ? `<span class="chip ${tone}">${tone === "warn" ? "近日可能触发" : "需关注"}</span>` : ""}
+    <span class="ln"></span><span class="tiny">${sub}</span></div>`;
+}
+
+function render() {
+  const rows = ROWS.filter(r => !r.empty).map(r => {
+    const d = (r.neckline && r.close) ? (r.close / r.neckline - 1) * 100 : null;
+    const dt = (r.target && r.close) ? (r.target / r.close - 1) * 100 : null;
+    return Object.assign({}, r, { d: d, dt: dt });
+  });
+
+  // ⚠ 分段必须覆盖全部 pending：
+  //   收盘价一旦 > 颈线就激活，所以 pending 的 d 必然 ≤ 0。
+  //   早期把"待突破"写成 d > 3，导致 d < -3 的标的（如 −9%）从三段里全部漏掉、凭空消失。
+  const live = rows.filter(r => r.phase === "active" || r.phase === "realized");
+  const edge = rows.filter(r => r.phase === "pending" && r.d !== null && Math.abs(r.d) <= 3)
+                   .sort((a, b) => Math.abs(a.d) - Math.abs(b.d));
+  const near = rows.filter(r => r.phase === "pending" && r.d !== null && r.d < -3)
+                   .sort((a, b) => b.d - a.d);          // 距颈线最近的排前面
+  const dormant = rows.filter(r => !r.neckline);
+
+  $("#sum").innerHTML = [
+    ["已激活", live.length, "up", "收盘已站上颈线"],
+    ["临界 ±3%", edge.length, "warn", "近日可能触发"],
+    ["待突破", near.length, "flat", "距颈线还有距离"],
+    ["未录颈线", dormant.length, "flat", "休眠态，先去录价位"],
+  ].map(([cn, n2, cls, tip]) => `<div class="it" title="${tip}">
+      <span class="chip ${cls === "flat" ? "flat" : cls}">${cn}</span>
+      <span class="n">${n2}</span></div>`).join("");
+
+  const C = [["标的", 1], ["方向", 0], ["现价", 0, "text-align:right"], ["颈线", 0, "text-align:right"],
+             ["距颈线", 0, "text-align:right"], ["完成度", "", "width:170px"], ["距目标", 0, "text-align:right"],
+             ["激活日", 0]];
+
+  $("#seg1").innerHTML = head("已站上颈线（结构进行中）", "激活后规则全开：阶梯减仓 / 移动止盈 / 假突破", live.length)
+    + tbl(live, C, r => `<tr data-code="${r.code}">
+        <td><a href="detail.html?code=${encodeURIComponent(r.code)}"><b>${esc(r.name)}</b></a>
+          <div class="cd">${esc(r.code)} · ${esc(r.phase_cn || "")}</div></td>
+        <td>${lab(r.label, r.code)}</td>
+        <td class="n" style="text-align:right">${n(r.close, 2)}</td>
+        <td class="n" style="text-align:right">${n(r.neckline, 2)}</td>
+        <td class="n up" style="text-align:right">${sgn(r.d, 1)}</td>
+        <td>${bar("completion", r.completion)}
+          <div class="tiny mono">${r.completion != null ? n(r.completion, 1) + "%" : "—"}</div></td>
+        <td class="n" style="text-align:right">${sgn(r.dt, 1)}</td>
+        <td class="tiny">—</td></tr>`);
+
+  $("#seg2").innerHTML = head("临界区（±3%）", "最近的一个收盘就可能改状态", edge.length, edge.length ? "warn" : "")
+    + tbl(edge, C, r => `<tr data-code="${r.code}">
+        <td><a href="detail.html?code=${encodeURIComponent(r.code)}"><b>${esc(r.name)}</b></a>
+          <div class="cd">${esc(r.code)} · 待突破</div></td>
+        <td>${lab(r.label, r.code)}</td>
+        <td class="n" style="text-align:right;font-weight:600">${n(r.close, 2)}</td>
+        <td class="n" style="text-align:right;color:var(--primary)">${n(r.neckline, 2)}</td>
+        <td class="n ${pctClass(r.d)}" style="text-align:right;font-weight:600">${sgn(r.d, 2)}</td>
+        <td>${bar("up", r.d)}<div class="tiny">${r.d >= 0 ? "已在上方，待收盘确认" : "一步之遥"}</div></td>
+        <td class="n" style="text-align:right">${sgn(r.dt, 1)}</td>
+        <td class="tiny">—</td></tr>`);
+
+  $("#seg3").innerHTML = head("待突破（按距离排序）", "距颈线越近越值得盯", near.length)
+    + tbl(near, C, r => `<tr data-code="${r.code}">
+        <td><a href="detail.html?code=${encodeURIComponent(r.code)}"><b>${esc(r.name)}</b></a>
+          <div class="cd">${esc(r.code)} · ${esc(r.pool_cn || "")}</div></td>
+        <td>${lab(r.label, r.code)}</td>
+        <td class="n" style="text-align:right">${n(r.close, 2)}</td>
+        <td class="n" style="text-align:right">${n(r.neckline, 2)}</td>
+        <td class="n" style="text-align:right">${sgn(r.d, 1)}</td>
+        <td>${bar("up", r.d)}<div class="tiny">需要 ${sgn(r.d, 1)} 才够</div></td>
+        <td class="n" style="text-align:right">${sgn(r.dt, 1)}</td>
+        <td class="tiny">—</td></tr>`);
+
+  $("#seg4").innerHTML = head("未录颈线（休眠态）", "结构未定义，任何信号都不该谈", dormant.length)
+    + tbl(dormant, C, r => `<tr data-code="${r.code}">
+        <td><a href="detail.html?code=${encodeURIComponent(r.code)}"><b>${esc(r.name)}</b></a>
+          <div class="cd">${esc(r.code)}</div></td>
+        <td>${lab(r.label, r.code)}</td>
+        <td class="n" style="text-align:right">${n(r.close, 2)}</td>
+        <td colspan="5" class="tiny muted">尚未录价位 —— 可去详情页用候选线一键录入，或在图上画一条颈线</td></tr>`,
+        );
+
+  $$("#seg1 tr[data-code],#seg2 tr[data-code],#seg3 tr[data-code],#seg4 tr[data-code]")
+    .forEach(tr => tr.onclick = e => { if (!e.target.closest("a")) location.href = "detail.html?code=" + encodeURIComponent(tr.dataset.code); });
+}
+
+async function load() {
+  const d = await api("/api/dashboard");
+  ROWS = d.rows || [];
+  render(); paintFoot(d.meta); bindLabelPicker(d, load);
+}
+$("#btnReload").onclick = () => load();
+$("#btnEval").onclick = async () => {
+  const b = $("#btnEval"); b.disabled = true; b.textContent = "评估中…";
+  try { await post("/api/evaluate", {}); toast("已重跑"); await load(); }
+  catch (e) { toast("失败：" + e.message, true); } finally { b.disabled = false; b.textContent = "重跑评估"; }
+};
+mountNav("/breakout");
+load().catch(e => toast("加载失败：" + e.message, true));
+</script>
+</body>
+</html>

@@ -1,0 +1,714 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>标的详情 · 仓位管家</title>
+<link rel="stylesheet" href="assets/app.css?v=20260916172250">
+<style>
+  .chartwrap { position: relative; }
+  #chart { width: 100%; height: 560px; }
+  #ovl { position: absolute; left: 0; top: 0; pointer-events: none; }
+  #ovl.armed { pointer-events: auto; cursor: crosshair; }
+  .floatbar { position: absolute; display: none; z-index: 20; background: #0F172A; color: #fff;
+    border-radius: 10px; padding: 5px; gap: 4px; box-shadow: 0 12px 32px rgba(16,24,40,.24); }
+  .floatbar.on { display: flex; }
+  .floatbar button { border: 0; background: transparent; color: #fff; font-size: 12px;
+    padding: 4px 9px; border-radius: 7px; }
+  .floatbar button:hover { background: rgba(255,255,255,.14); }
+  .floatbar button.pri2 { background: var(--primary); }
+  .lvlpick { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+  .lvlpick button { border: 1px solid var(--line-2); background: var(--card); border-radius: 10px;
+    padding: 9px 6px; font-size: 12.5px; color: var(--t1); }
+  .lvlpick button.on { border-color: var(--primary); background: var(--primary-50);
+    color: var(--primary); font-weight: 600; }
+  .lvlpick button:disabled { opacity: .35; cursor: not-allowed; }
+  .legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 11.5px; color: var(--t2); }
+  .legend i { display: inline-block; width: 18px; height: 0; border-top-width: 2px;
+    vertical-align: middle; margin-right: 5px; }
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="side" id="side"></aside>
+  <main class="main">
+
+    <div class="page-h">
+      <h1 id="nm">…</h1>
+      <span class="sub" id="sub"></span>
+      <span class="right toolbar">
+        <button class="btn sm ghost" id="btnLabel">设方向</button>
+        <button class="btn sm ghost" id="btnReplay">回放</button>
+        <button class="btn sm" id="btnEvalOne">评估</button>
+        <button class="btn sm primary" id="btnSyncOne">同步日K</button>
+      </span>
+    </div>
+
+    <div class="card" id="hero" style="margin-bottom:16px"></div>
+
+    <div class="card" style="margin-bottom:16px">
+      <div class="card-h">
+        <h2>结构图</h2>
+        <span class="sub">日线收盘价判定 · 盘中数据物理隔离</span>
+        <span class="right toolbar">
+          <span class="seg" id="toolSeg">
+            <button data-t="none" class="on">浏览</button>
+            <button data-t="hline">水平线</button>
+            <button data-t="segment">线段</button>
+            <button data-t="zone">区间</button>
+          </span>
+        </span>
+      </div>
+      <div class="chartwrap">
+        <div id="chart"></div>
+        <svg id="ovl" xmlns="http://www.w3.org/2000/svg"></svg>
+        <div class="floatbar" id="floatbar"></div>
+      </div>
+      <div style="display:flex;align-items:center;gap:16px;margin-top:12px;flex-wrap:wrap">
+        <div class="legend">
+          <span><i style="border-top:2px dashed #4F46E5"></i>颈线</span>
+          <span><i style="border-top:2px dashed #E23A3A"></i>量度目标</span>
+          <span><i style="border-top:2px dotted #94A3B8"></i>失效线</span>
+          <span><i style="border-top:2px dashed #F59E0B"></i>买卖区间</span>
+          <span><i style="border-top:2px dotted #0EA5E9"></i>哨兵</span>
+        </div>
+        <div class="tiny" id="hint" style="margin-left:auto"></div>
+      </div>
+    </div>
+
+    <div class="grid2" style="margin-bottom:16px;align-items:start">
+      <div class="card" id="structCard"></div>
+      <div class="card" id="ruleCard"></div>
+    </div>
+
+    <div class="grid2" style="margin-bottom:16px;align-items:start">
+      <div class="card" id="candCard"></div>
+      <div class="card" id="sigCard"></div>
+    </div>
+
+    <div class="card pad0" id="roundCard"></div>
+
+  </main>
+</div>
+
+<div class="modal" id="modal"><div class="box" id="modalBox"></div></div>
+
+<script src="vendor/klinecharts.min.js?v=20260916172250"></script>
+<script src="data/data.js?v=20260916172250"></script>
+<script src="assets/app.js?v=20260916172250"></script>
+<script>
+const CODE = qs("code");
+let D = null, chart = null, BARS = [];
+let tool = "none", stage = 0, draft = null, dragIdx = -1, cursor = null;
+
+/* ============================ 图表 ============================ */
+function toK(bars) {
+  return bars.map(b => {
+    const ts = Date.parse(b.trade_date + "T00:00:00+08:00");
+    return { timestamp: ts, open: +b.open, high: +b.high, low: +b.low,
+             close: +b.close, volume: +b.volume || 0, turnover: +b.amount || 0 };
+  }).filter(b => isFinite(b.timestamp) && isFinite(b.close));
+}
+
+function initChart() {
+  chart = klinecharts.init("chart");
+  try {
+    chart.setStyles({
+      grid: { horizontal: { color: "#EEF0F3" }, vertical: { color: "#F5F7FA" } },
+      candle: {
+        bar: { upColor: "#E23A3A", downColor: "#16A34A", noChangeColor: "#64748B",
+               upBorderColor: "#E23A3A", downBorderColor: "#16A34A",
+               upWickColor: "#E23A3A", downWickColor: "#16A34A" },
+        priceMark: { high: { color: "#94A3B8" }, low: { color: "#94A3B8" },
+                     last: { upColor: "#E23A3A", downColor: "#16A34A", noChangeColor: "#64748B",
+                             text: { size: 11 } } },
+        tooltip: { text: { color: "#0F172A", size: 12 } }
+      },
+      indicator: { tooltip: { text: { color: "#0F172A", size: 12 } },
+                   lastValueMark: { text: { color: "#fff" } } },
+      xAxis: { axisLine: { color: "#EEF0F3" }, tickLine: { color: "#EEF0F3" },
+               tickText: { color: "#94A3B8", size: 11 } },
+      yAxis: { axisLine: { color: "#EEF0F3" }, tickLine: { color: "#EEF0F3" },
+               tickText: { color: "#94A3B8", size: 11 } },
+      separator: { color: "#EEF0F3" },
+      crosshair: {
+        horizontal: { line: { color: "#94A3B8" }, text: { backgroundColor: "#4F46E5" } },
+        vertical: { line: { color: "#94A3B8" }, text: { backgroundColor: "#4F46E5" } }
+      }
+    });
+  } catch (e) { console.warn("setStyles", e); }
+
+  try { chart.createIndicator({ name: "MA", calcParams: [5, 10, 20, 60] }, false, { id: "candle_pane" }); }
+  catch (e) { console.warn("MA", e); }
+  try { chart.createIndicator({ name: "VOL" }, false, { id: "vol_pane", height: 90, minHeight: 56 }); }
+  catch (e) { console.warn("VOL", e); }
+  try { chart.createIndicator({ name: "MACD", calcParams: [12, 26, 9] }, false, { id: "macd_pane", height: 110, minHeight: 70 }); }
+  catch (e) { console.warn("MACD", e); }
+
+  try {
+    chart.subscribeAction("onVisibleRangeChange", () => drawOverlay());
+    chart.subscribeAction("onZoom", () => drawOverlay());
+    chart.subscribeAction("onScroll", () => drawOverlay());
+  } catch (e) { console.warn("subscribe", e); }
+
+  window.addEventListener("resize", () => { try { chart.resize(); } catch (e) {} drawOverlay(); });
+  setInterval(drawOverlay, 150);   // 兜底同步：可视区任何变化都会跟手
+}
+
+function px(ts, price) {
+  try {
+    const r = chart.convertToPixel([{ timestamp: ts, value: price }]);
+    return (r && r[0] && isFinite(r[0].y)) ? r[0] : null;
+  } catch (e) { return null; }
+}
+function unpx(x, y) {
+  try {
+    const r = chart.convertFromPixel([{ x: x, y: y }]);
+    return (r && r[0]) ? r[0] : null;
+  } catch (e) { return null; }
+}
+function lastTs() { return BARS.length ? BARS[BARS.length - 1].timestamp : Date.now(); }
+
+/* ============================ 覆盖层 ============================ */
+let HIDDEN = {};
+function drawOverlay() {
+  const svg = $("#ovl"), box = $("#chart");
+  if (!chart || !box) return;
+  const W = box.clientWidth, H = box.clientHeight;
+  if (svg.getAttribute("width") !== String(W)) {
+    svg.setAttribute("width", W); svg.setAttribute("height", H);
+    svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+    svg.style.width = W + "px"; svg.style.height = H + "px";
+  }
+  const P = [];
+
+  /* --- 已确认价位线 --- */
+  const LV = (D && D.levels) || {};
+  const ts = lastTs();
+  const push = (price, opt) => {
+    if (price == null || HIDDEN[opt.key]) return;
+    const p = px(ts, price); if (!p) return;
+    P.push(`<line x1="0" y1="${p.y}" x2="${W - 64}" y2="${p.y}" stroke="${opt.color}"
+      stroke-width="${opt.w || 1.4}" ${opt.dash ? `stroke-dasharray="${opt.dash}"` : ""}/>`);
+    P.push(`<text x="${W - 60}" y="${p.y + 3.5}" fill="${opt.color}" font-size="11"
+      font-family="ui-monospace,Consolas,monospace">${opt.label}</text>`);
+  };
+  (LV.neckline || []).forEach(r =>
+    push(r.price, { color: "#4F46E5", dash: "6 4", label: `颈线 ${n(r.price, 2)}`, key: "neckline" }));
+  (LV.measured_target || []).forEach(r =>
+    push(r.price, { color: "#E23A3A", dash: "6 4", label: `目标 ${n(r.price, 2)}`, key: "target" }));
+  (LV.second_target || []).forEach(r =>
+    push(r.price, { color: "#EA580C", dash: "6 4", label: `二目标 ${n(r.price, 2)}`, key: "t2" }));
+  (LV.top_neckline || []).forEach(r =>
+    push(r.price, { color: "#7C3AED", dash: "6 4", label: `头部颈线 ${n(r.price, 2)}`, key: "top" }));
+  (LV.pre_breakout || []).forEach(r =>
+    push(r.price, { color: "#0EA5E9", dash: "4 4", label: `预备 ${n(r.price, 2)}`, key: "pre" }));
+
+  // 失效线：实时计算，不落库（从规则表取）
+  const iv = ((D && D.rule_table) || []).find(x => x.name.indexOf("失效线") >= 0);
+  if (iv && iv.price) push(iv.price, { color: "#94A3B8", dash: "2 5", w: 1.2,
+    label: `失效 ${n(iv.price, 2)}`, key: "inv" });
+
+  /* --- 区间（回撤买入区 / 起涨区）--- */
+  const zone = (rows, color, key) => {
+    (rows || []).forEach(r => {
+      if (HIDDEN[key]) return;
+      const a = px(ts, r.price_lower != null ? r.price_lower : r.price);
+      const b = px(ts, r.price);
+      if (!a || !b) return;
+      const y1 = Math.min(a.y, b.y), y2 = Math.max(a.y, b.y);
+      P.push(`<rect x="0" y="${y1}" width="${W - 64}" height="${Math.max(2, y2 - y1)}"
+        fill="${color}" fill-opacity=".08" stroke="${color}" stroke-opacity=".45" stroke-dasharray="4 4"/>`);
+      P.push(`<text x="${W - 60}" y="${y1 + 3.5}" fill="${color}" font-size="11"
+        font-family="ui-monospace,Consolas,monospace">${key === "pz" ? "买回区" : "起涨区"} ${n(r.price, 2)}</text>`);
+    });
+  };
+  zone(LV.pullback_zone, "#16A34A", "pz");
+  zone(LV.start_zone, "#F59E0B", "sz");
+
+  /* --- 哨兵：点划线 --- */
+  ((D && D.sentinels) || []).forEach((s, i) => {
+    const p = px(ts, s.price); if (!p) return;
+    P.push(`<line x1="0" y1="${p.y}" x2="${W - 64}" y2="${p.y}" stroke="#0EA5E9"
+      stroke-width="1.2" stroke-dasharray="1 4" stroke-linecap="round"/>`);
+    P.push(`<circle cx="${W - 68}" cy="${p.y}" r="3" fill="#0EA5E9"/>`);
+    P.push(`<text x="${W - 60}" y="${p.y + 3.5}" fill="#0EA5E9" font-size="11"
+      font-family="ui-monospace,Consolas,monospace">哨兵 ${n(s.price, 2)}</text>`);
+  });
+
+  /* --- 激活/峰值标记 --- */
+  if (D && D.round && D.round.activated_at) {
+    const a = px(Date.parse(D.round.activated_at + "T00:00:00+08:00"), D.round.activated_price);
+    if (a) {
+      P.push(`<circle cx="${a.x}" cy="${a.y}" r="4.5" fill="none" stroke="#4F46E5" stroke-width="2"/>`);
+      P.push(`<text x="${a.x + 7}" y="${a.y - 6}" fill="#4F46E5" font-size="10.5">激活</text>`);
+    }
+  }
+
+  /* --- 画线草稿 --- */
+  if (draft) {
+    const col = "#4F46E5";
+    if (draft.type === "hline") {
+      const p = px(ts, draft.price);
+      if (p) {
+        P.push(`<line x1="0" y1="${p.y}" x2="${W}" y2="${p.y}" stroke="${col}" stroke-width="1.6" stroke-dasharray="7 4"/>`);
+        P.push(`<text x="6" y="${p.y - 6}" fill="${col}" font-size="11.5" font-weight="600">草稿 ${n(draft.price, 2)}</text>`);
+        if (stage >= 2) P.push(`<circle cx="${W / 2}" cy="${p.y}" r="5" fill="#fff" stroke="${col}" stroke-width="2" data-h="0"/>`);
+      }
+    } else {
+      const pts = draft.pts.slice();
+      if (stage === 1 && cursor) pts.push(cursor);
+      const scr = pts.map(q => px(q.timestamp, q.price)).filter(Boolean);
+      if (draft.type === "zone" && scr.length >= 2) {
+        const y1 = Math.min(scr[0].y, scr[scr.length - 1].y), y2 = Math.max(scr[0].y, scr[scr.length - 1].y);
+        P.push(`<rect x="0" y="${y1}" width="${W}" height="${Math.max(2, y2 - y1)}" fill="${col}" fill-opacity=".08"
+          stroke="${col}" stroke-dasharray="6 4"/>`);
+      }
+      if (scr.length >= 2) {
+        P.push(`<line x1="${scr[0].x}" y1="${scr[0].y}" x2="${scr[scr.length - 1].x}" y2="${scr[scr.length - 1].y}"
+          stroke="${col}" stroke-width="1.6" stroke-dasharray="7 4"/>`);
+      }
+      if (stage >= 2) scr.forEach((p, i) =>
+        P.push(`<circle cx="${p.x}" cy="${p.y}" r="5" fill="#fff" stroke="${col}" stroke-width="2" data-h="${i}"/>`));
+    }
+  }
+
+  svg.innerHTML = P.join("");
+}
+
+/* ============================ 画线两段式 ============================ */
+function setTool(t) {
+  /* 快照模式：画线是写操作（先存 drawing 再提拔为价位），没有后端就没有意义 */
+  if (STATIC_MODE && t !== "none") {
+    toast("线上是只读快照 —— 画线录价位请在本机工作台操作", true); return;
+  }
+  tool = t; stage = t === "none" ? 0 : 1;
+  draft = null; cursor = null;
+  $("#ovl").className = t === "none" ? "" : "armed";
+  $$("#toolSeg button").forEach(b => b.classList.toggle("on", b.dataset.t === t));
+  $("#floatbar").className = "floatbar";
+  $("#hint").textContent = t === "none" ? "选一个工具，在图上点两下即可画线（先为草稿，确认后才入库）"
+    : (t === "hline" ? "在图上点一下确定价位" : "在图上点第一下、再点第二下完成");
+  drawOverlay();
+}
+
+$("#ovl").addEventListener("mousedown", e => {
+  if (tool === "none") return;
+  const r = $("#ovl").getBoundingClientRect();
+  const x = e.clientX - r.left, y = e.clientY - r.top;
+  const hitDot = e.target.getAttribute && e.target.getAttribute("data-h");
+  if (hitDot !== null && stage >= 2) { dragIdx = Number(hitDot); return; }
+
+  const p = unpx(x, y);
+  if (!p || !isFinite(p.value)) return;
+
+  if (tool === "hline") {
+    draft = { type: "hline", price: +p.value.toFixed(4) };
+    stage = 2; showFloat();
+  } else if (stage === 1) {
+    draft = { type: tool, pts: [{ timestamp: p.timestamp, price: +p.value.toFixed(4) }] };
+    stage = 1.5; cursor = { timestamp: p.timestamp, price: +p.value.toFixed(4) };
+  } else if (stage === 1.5) {
+    draft.pts.push({ timestamp: p.timestamp, price: +p.value.toFixed(4) });
+    stage = 2; cursor = null; showFloat();
+  }
+  drawOverlay();
+});
+
+window.addEventListener("mousemove", e => {
+  if (dragIdx < 0 && !(stage === 1.5 && draft)) return;
+  const r = $("#ovl").getBoundingClientRect();
+  const p = unpx(e.clientX - r.left, e.clientY - r.top);
+  if (!p) return;
+  if (dragIdx >= 0 && draft && draft.pts) {
+    draft.pts[dragIdx] = { timestamp: p.timestamp, price: +p.value.toFixed(4) };
+    showFloat();
+  } else if (stage === 1.5 && draft) {
+    cursor = { timestamp: p.timestamp, price: +p.value.toFixed(4) };
+  }
+  drawOverlay();
+});
+window.addEventListener("mouseup", () => { dragIdx = -1; });
+
+function draftSummary() {
+  if (!draft) return [];
+  if (draft.type === "hline") return [draft.price];
+  return draft.pts.map(p => p.price);
+}
+
+function showFloat() {
+  const bar = $("#floatbar");
+  bar.innerHTML = `<button data-a="ok" class="pri2">确定</button>
+    <button data-a="del">重画</button><button data-a="cancel">取消</button>`;
+  const svg = $("#ovl");
+  let x = 40, y = 40;
+  if (draft.type === "hline") {
+    const p = px(lastTs(), draft.price); if (p) { x = svg.clientWidth / 2 - 60; y = p.y - 40; }
+  } else if (draft.pts && draft.pts.length) {
+    const p = px(draft.pts[0].timestamp, draft.pts[0].price); if (p) { x = p.x - 60; y = p.y - 44; }
+  }
+  bar.style.left = Math.max(4, Math.min(svg.clientWidth - 190, x)) + "px";
+  bar.style.top = Math.max(4, y) + "px";
+  bar.className = "floatbar on";
+  $$("#floatbar button").forEach(b => b.onclick = ev => {
+    ev.stopPropagation();
+    const a = b.dataset.a;
+    if (a === "del") { draft = null; setTool(tool); return; }
+    if (a === "cancel") { setTool("none"); return; }
+    if (a === "ok") openSemantic();
+  });
+}
+
+/* 第二段：读价 → 语义卡 → 确认后才入库 */
+function openSemantic() {
+  if (!draft) return;
+  const isZone = draft.type === "zone";
+  const ps = draftSummary().slice().sort((a, b) => a - b);
+  const price = isZone ? ps[ps.length - 1] : ps[0];
+  const lower = isZone && ps.length > 1 ? ps[0] : null;
+  const TYPES = [
+    ["neckline", "颈线", false], ["measured_target", "量度目标", false],
+    ["second_target", "第二目标", false], ["pullback_zone", "回撤买入区", true],
+    ["start_zone", "起涨区", true], ["top_neckline", "头部颈线", false],
+    ["pre_breakout", "预备突破位", false], ["reference", "仅参考线", null],
+  ];
+  const round = (D && D.round && D.round.round_no) || 1;
+  $("#modalBox").innerHTML = `
+    <h3>确认这条线</h3>
+    <div class="sub">草稿已读价 —— 写入前请确认身份。这一步之后才会入库（价位必经界面确认）。</div>
+    <div class="row2" style="margin-bottom:14px">
+      <div class="field"><label>价位${isZone ? "（上沿）" : ""}</label>
+        <input id="mPrice" value="${n(price, 4)}" readonly></div>
+      <div class="field"><label>${isZone ? "下沿" : "类型"}</label>
+        <input id="mLower" value="${isZone ? n(lower, 4) : (draft.type === "hline" ? "水平线" : "线段")}" readonly></div>
+    </div>
+    <div class="field"><label>身份</label>
+      <div class="lvlpick" id="pick">
+        ${TYPES.map(([k, cn, needZone]) => {
+          const dis = (needZone === true && !isZone) ? "disabled" : "";
+          return `<button data-k="${k}" ${dis}>${cn}</button>`;
+        }).join("")}
+      </div></div>
+    <div class="field"><label>备注（可选）</label><input id="mNote" placeholder="例如：平台颈线 / KOL 原图"></div>
+    <div class="row2" style="margin-bottom:8px">
+      <div class="field" style="margin:0"><label>轮次</label><input id="mRound" value="${round}"></div>
+      <div class="field" style="margin:0" id="ratioWrap"><label>买回成数（区间用）</label>
+        <input id="mRatio" placeholder="留空＝按规则默认"></div>
+    </div>
+    <div class="toolbar" style="justify-content:flex-end;margin-top:16px">
+      <button class="btn" id="mCancel">取消</button>
+      <button class="btn primary" id="mOk" disabled>写入价位</button>
+    </div>`;
+  $("#modal").className = "modal on";
+  let picked = null;
+  $$("#pick button").forEach(b => b.onclick = () => {
+    if (b.disabled) return;
+    picked = b.dataset.k;
+    $$("#pick button").forEach(x => x.classList.toggle("on", x === b));
+    $("#mOk").disabled = false;
+  });
+  $("#mCancel").onclick = () => { $("#modal").className = "modal"; };
+  $("#mOk").onclick = async () => {
+    if (!picked) return;
+    try {
+      const anchors = draft.type === "hline"
+        ? [[new Date(lastTs()).toISOString().slice(0, 10), price]]
+        : draft.pts.map(p => [new Date(p.timestamp).toISOString().slice(0, 10), p.price]);
+      // 留痕：先存画线（几何原样保留）
+      const dr = await post("/api/drawing", { code: CODE, tool_type: draft.type,
+        anchors: anchors, semantic: picked });
+      // 再提拔为价位（几何铁律：只改身份与样式，不改几何）
+      const r = await post("/api/promote", { drawing_id: dr.id, level_type: picked,
+        round_no: Number($("#mRound").value) || 1, note: $("#mNote").value || "",
+        buyback_ratio: $("#mRatio") && $("#mRatio").value ? Number($("#mRatio").value) : null,
+        price_override: price });
+      $("#modal").className = "modal";
+      toast(r.created ? "已写入价位，并生成新版本" : "与现行版本一致，未生成新版本（幂等）");
+      setTool("none"); await load();
+    } catch (e) { toast("写入失败：" + e.message, true); }
+  };
+}
+
+$$("#toolSeg button").forEach(b => b.onclick = () => setTool(b.dataset.t));
+
+/* ============================ 渲染 ============================ */
+function renderHero() {
+  const s = D.snapshot || {}, r = D.round || {}, it = D.instrument || {};
+  const key = [
+    ["带宽分位", s.bw_pct != null ? n(s.bw_pct, 0) + (s.bw_state === "low" ? " 低温" : s.bw_state === "high" ? " 高温" : "") : "—"],
+    ["距趋势中轴", sgn(s.dist_mid, 1)],
+    ["距下轨", sgn(s.dist_low, 1)],
+    ["250日回撤", sgn(s.dd250, 1)],
+    ["ATR波动", s.atr_pct != null ? n(s.atr_pct, 2) + "%" : "—"],
+    ["MACD", s.macd_cross ? (s.macd_cross === "golden" ? "金叉" : "死叉") + (s.macd_axis === "above" ? "·轴上" : "·轴下") : "—"],
+  ];
+  $("#hero").innerHTML = `
+    <div class="hero">
+      <div>
+        <div class="tiny">最新收盘 ${esc(s.date || "—")}</div>
+        <div class="big ${pctClass(s.pct_chg)}">${n(s.close, 2)}</div>
+      </div>
+      <div style="padding-bottom:6px">${chip(s.pct_chg)}
+        <div class="tiny" style="margin-top:6px">${lab(it.direction_label)} ${esc(D.pool_cn || "")}</div>
+      </div>
+      <div style="min-width:230px">
+        <div class="tiny">结构相位 · 第 ${esc(r.round_no || 1)} 轮</div>
+        <div style="display:flex;align-items:center;gap:10px;margin-top:4px">
+          <b style="font-size:15px">${esc(D.phase_cn || "—")}</b>
+          ${displayTag(D.display, D.phase_cn)}
+        </div>
+        <div style="margin-top:8px">${r.completion != null
+          ? `<div class="pbar ${r.completion >= 90 ? "up" : r.completion >= 70 ? "warn" : ""}">
+               <i style="width:${Math.max(0, Math.min(100, r.completion))}%"></i></div>
+             <div class="tiny" style="margin-top:4px">完成度 ${n(r.completion, 1)}%　
+               ${esc(r.peak_completion != null ? "峰值 " + n(r.peak_completion, 1) + "%" : "")}</div>`
+          : `<div class="tiny">${esc(r.neckline ? "等待收盘站上颈线 " + n(r.neckline, 2) : "尚未录价位")}</div>`}
+        </div>
+      </div>
+      <div style="min-width:150px">
+        <div class="tiny">剧本收益（阶梯减仓）</div>
+        <div style="font-size:26px;font-weight:700;letter-spacing:-.5px"
+             class="${pctClass(D.scenario)}">${D.scenario != null ? sgn(D.scenario, 1) : "—"}</div>
+        <div class="tiny">颈线满仓→70/80/90/100% 分批离场</div>
+      </div>
+      <div style="flex:1;min-width:260px;display:grid;grid-template-columns:1fr 1fr;gap:0 20px">
+        ${key.map(([k, v]) => `<div class="kv"><span class="k">${k}</span><span class="v">${esc(v)}</span></div>`).join("")}
+      </div>
+    </div>`;
+}
+
+function renderStruct() {
+  const r = D.round || {}, s = D.snapshot || {};
+  const ix = D.index_state || {};
+  $("#structCard").innerHTML = `
+    <div class="card-h"><h2>结构卡</h2><span class="sub">${esc(D.phase_cn || "")}</span></div>
+    <div class="kv"><span class="k">颈线</span><span class="v">${n(r.neckline, 2)}
+      ${r.neckline_version ? `<span class="tiny">v${r.neckline_version}</span>` : ""}</span></div>
+    <div class="kv"><span class="k">量度目标</span><span class="v">${n(r.target, 2)}
+      ${r.target_version ? `<span class="tiny">v${r.target_version}</span>` : ""}</span></div>
+    <div class="kv"><span class="k">失效线（实时算）</span><span class="v">${
+      ((D.rule_table || []).find(x => x.name.indexOf("失效线") >= 0) || {}).price != null
+        ? n(((D.rule_table || []).find(x => x.name.indexOf("失效线") >= 0)).price, 2) : "—"}</span></div>
+    <div class="kv"><span class="k">激活日 / 激活价</span><span class="v">${
+      esc(r.activated_at || "—")}${r.activated_price ? " / " + n(r.activated_price, 2) : ""}</span></div>
+    <div class="kv"><span class="k">峰值收盘 / 峰值完成度</span><span class="v">${
+      r.peak_close ? n(r.peak_close, 2) : "—"}${r.peak_completion != null ? " / " + n(r.peak_completion, 1) + "%" : ""}</span></div>
+    <div class="kv"><span class="k">距目标</span><span class="v">${sgn(r.target_dist, 1)}</span></div>
+    <div class="kv"><span class="k">距颈线</span><span class="v">${sgn(r.enter_dist, 1)}</span></div>
+    <div class="kv"><span class="k">主指数 / 方向</span><span class="v">${esc(ix.name || "—")}
+      ${ix.label ? lab(ix.label) : ""}</span></div>
+    <div class="kv"><span class="k">主指数完成度</span><span class="v">${
+      ix.completion != null ? n(ix.completion, 1) + "%" : "—"}</span></div>
+    <div class="kv"><span class="k">衰减系数（共振入场）</span><span class="v">${
+      r.entry_ratio != null ? "×" + n(r.entry_ratio, 2) : "—"}</span></div>`;
+}
+
+function renderRules() {
+  const rows = D.rule_table || [];
+  const LVCN = { neckline: "颈线", measured_target: "量度目标", second_target: "第二目标",
+    pre_breakout: "预备突破位", pullback_zone: "回撤买入区", top_neckline: "头部颈线",
+    start_zone: "起涨区", reference: "仅参考线" };
+  $("#ruleCard").innerHTML = `
+    <div class="card-h"><h2>规则表</h2><span class="sub">只影响排序与提示，不接交易接口</span></div>
+    ${rows.length ? `<table class="tbl mini"><thead><tr>
+      <th>规则位</th><th style="text-align:right">价位</th><th>状态</th><th>说明</th></tr></thead><tbody>
+      ${rows.map(r => `<tr>
+        <td><b>${esc(r.name)}</b></td>
+        <td class="n" style="text-align:right">${n(r.price, 2)}${
+          r.price_lower != null ? `<div class="cd">${n(r.price_lower, 2)} 起</div>` : ""}</td>
+        <td>${esc(r.status)}</td><td class="tiny">${esc(r.detail || "")}</td></tr>`).join("")}
+    </tbody></table>` : emptyBox("未录价位 —— 去图上画一条颈线吧")}
+    <div style="margin-top:16px">
+      <div class="card-h"><h2 style="font-size:13.5px">全部价位版本台账</h2></div>
+      ${renderLevelHistory()}
+    </div>`;
+}
+
+function renderLevelHistory() {
+  const LV = D.levels || {};
+  const out = [];
+  Object.keys(LV).forEach(k => (LV[k] || []).forEach(r => out.push(Object.assign({ _k: k }, r))));
+  if (!out.length) return `<div class="tiny">暂无</div>`;
+  const LVCN = { neckline: "颈线", measured_target: "量度目标", second_target: "第二目标",
+    pre_breakout: "预备突破位", pullback_zone: "回撤买入区", top_neckline: "头部颈线",
+    start_zone: "起涨区", reference: "仅参考线" };
+  return `<table class="tbl mini"><thead><tr><th>类型</th><th style="text-align:right">价位</th>
+    <th>版本</th><th>确认时间</th><th>来源</th></tr></thead><tbody>
+    ${out.map(r => `<tr><td>${esc(LVCN[r._k] || r._k)}</td>
+      <td class="n" style="text-align:right">${n(r.price, 2)}${r.price_lower != null ? `<div class="cd">${n(r.price_lower, 2)} 起</div>` : ""}</td>
+      <td><span class="chip flat">v${r.version}</span></td>
+      <td class="tiny">${esc(r.confirmed_at || "—")}</td>
+      <td class="tiny">${esc(r.source || "")}</td></tr>`).join("")}</tbody></table>`;
+}
+
+function renderCandidates() {
+  const sg = D.suggest || {};
+  const nls = sg.neckline || [], tgs = sg.target || [];
+  const cur = D.round || {};
+  const fmtC = (c, i, kind) => `
+    <div class="cand">
+      <div class="r1"><span class="p">${n(c.price, 2)}</span>
+        <span class="chip ${kind === "neckline" ? "flat" : "up"}">${
+          kind === "neckline" ? "候选颈线" : "候选目标"}</span>
+        <span class="tiny" style="margin-left:auto">${esc(c.touches ? "触碰 " + c.touches + " 次" : "")}
+        ${c.dist_pct != null ? " 距现价 " + sgn(c.dist_pct, 1) : ""}</span></div>
+      <div class="why">${esc(c.reason || "")}</div>
+      <div class="toolbar" style="margin-top:8px">
+        <button class="btn sm" data-set="${kind}" data-i="${i}">录入这条</button>
+        ${c.target != null ? `<span class="tiny">配套目标 ${n(c.target, 2)}　剧本收益 ${
+          c.scenario != null ? sgn(c.scenario, 1) : "—"}</span>` : ""}
+      </div>
+    </div>`;
+  $("#candCard").innerHTML = `
+    <div class="card-h"><h2>候选线（算法生成）</h2>
+      <span class="sub">只给参考，录入必须由你点</span></div>
+    ${(nls.length || tgs.length) ? `
+      ${nls.length ? `<div class="tiny" style="margin-bottom:6px">颈线候选</div>
+        ${nls.slice(0, 4).map((c, i) => fmtC(c, i, "neckline")).join("")}` : ""}
+      ${tgs.length ? `<div class="tiny" style="margin:10px 0 6px">量度目标候选</div>
+        ${tgs.slice(0, 4).map((c, i) => fmtC(c, i, "target")).join("")}` : ""}
+      <div class="toolbar" style="margin-top:10px">
+        <button class="btn sm primary" id="btnAcceptPair" ${sg.pair ? "" : "disabled"}>
+          一键采纳推荐配对</button>
+        <span class="tiny">推荐配对＝现价上方最近阻力作颈线 + 形态高度投射</span>
+      </div>`
+      : emptyBox(sg.error || "无候选 —— 数据不足或形态不清晰")}`;
+  $$("#candCard [data-set]").forEach(b => b.onclick = async () => {
+    const kind = b.dataset.set, i = Number(b.dataset.i);
+    const c = (kind === "neckline" ? nls : tgs)[i];
+    if (!c) return;
+    try {
+      await post("/api/level", { code: CODE, level_type: kind === "neckline" ? "neckline" : "measured_target",
+        price: c.price, source: "system", round_no: (D.round && D.round.round_no) || 1,
+        note: c.reason || "候选线录入" });
+      toast("已录入"); await load();
+    } catch (e) { }
+  });
+  const bp = $("#btnAcceptPair");
+  if (bp) bp.onclick = async () => {
+    try {
+      await post("/api/accept_suggest", { code: CODE, round_no: (D.round && D.round.round_no) || 1,
+        neckline: sg.pair && sg.pair.neckline, target: sg.pair && sg.pair.target });
+      toast("已采纳推荐配对"); await load();
+    } catch (e) { }
+  };
+}
+
+function renderSignals() {
+  const ss = D.signals || [];
+  const P = { 1: "p1", 2: "p2", 3: "p3", 4: "p4" };
+  $("#sigCard").innerHTML = `
+    <div class="card-h"><h2>事件时间线</h2>
+      <span class="sub">${ss.length} 条 · 去抖后</span>
+      <span class="right">${ss.length ? `<button class="btn sm ghost" id="btnCopySig">复制</button>` : ""}</span></div>
+    ${ss.length ? `<div style="max-height:420px;overflow:auto">
+      ${ss.map(s => `<div class="alert ${P[s.priority] || "p4"} ${s.stale ? "done" : ""}" style="padding:10px 12px">
+        <div class="h"><span class="pri p${s.priority}">P${s.priority}</span>
+          <b style="font-size:12.5px">${esc(s.title)}</b>
+          ${s.stale ? `<span class="chip gray" title="同日重跑评估后本轮不再触发，已退场但保留留痕">已退场</span>` : ""}
+          <span class="tiny" style="margin-left:auto">${esc(s.trade_date)}</span></div>
+        ${s.detail ? `<div class="d">${esc(s.detail)}</div>` : ""}
+      </div>`).join("")}</div>` : emptyBox("暂无事件。未触发就是未触发。")}`;
+  const cb = $("#btnCopySig");
+  if (cb) cb.onclick = () => copyText(ss.map(s =>
+    `${s.trade_date} [P${s.priority}] ${s.title} ${s.detail || ""}`).join("\n"));
+}
+
+function renderRounds() {
+  const rs = D.rounds || [];
+  if (!rs.length) { $("#roundCard").innerHTML = `<div style="padding:24px">${emptyBox("无轮次")}</div>`; return; }
+  const cur = D.round || {};
+  $("#roundCard").innerHTML = `
+    <div class="card-h" style="padding:24px 24px 0;margin-bottom:12px">
+      <h2>轮次台账</h2><span class="sub">衰竭是终态，不因反弹回退</span></div>
+    <table class="tbl mini"><thead><tr>
+      <th>轮次</th><th>相位</th><th>展示口径</th><th>激活日</th>
+      <th style="text-align:right">激活价</th><th style="text-align:right">峰值收盘</th>
+      <th style="text-align:right">峰值完成度</th><th style="text-align:right">当前完成度</th>
+      <th>兑现/衰竭日</th></tr></thead><tbody>
+      ${rs.map(r => `<tr style="${r.round_no === cur.round_no ? "background:#FAFBFC" : ""}">
+        <td><b>第 ${r.round_no} 轮</b></td>
+        <td>${esc(PHASE_CN[r.phase] || r.phase)}</td>
+        <td class="tiny">${{ pending: "休眠态", active: "监控态", realized: "回顾态", exhausted: "回顾态" }[r.phase] || "—"}</td>
+        <td class="tiny">${esc(r.activated_at || "—")}</td>
+        <td class="n" style="text-align:right">${n(r.activated_price, 2)}</td>
+        <td class="n" style="text-align:right">${n(r.peak_close, 2)}</td>
+        <td class="n" style="text-align:right">${r.peak_completion != null ? n(r.peak_completion, 1) + "%" : "—"}</td>
+        <td class="n" style="text-align:right">${r.round_no === cur.round_no && cur.completion != null
+          ? n(cur.completion, 1) + "%" : "—"}</td>
+        <td class="tiny">${esc(r.realized_at || r.exhausted_at || "—")}</td></tr>`).join("")}
+    </tbody></table>`;
+}
+
+/* ============================ 加载 ============================ */
+async function load() {
+  const d = await api("/api/instrument?code=" + encodeURIComponent(CODE));
+  if (d.error) throw new Error(d.error);
+  /* 切换标的：全量重置覆盖层与画线状态（05 册要求） */
+  HIDDEN = {}; draft = null; tool = "none"; stage = 0; dragIdx = -1; cursor = null;
+  $("#floatbar").className = "floatbar"; $("#ovl").className = "";
+  $$("#toolSeg button").forEach(b => b.classList.toggle("on", b.dataset.t === "none"));
+
+  D = d;
+  const it = d.instrument || {};
+  document.title = `${it.name || CODE} · 仓位管家`;
+  $("#nm").textContent = it.name || CODE;
+  $("#sub").innerHTML = `${esc(it.code)} · ${esc(it.sector || "")} · ${lab(it.direction_label, it.code)}`;
+  $("#btnLabel").onclick = () => pickLabel({
+    code: CODE, name: it.name, direction_label: it.direction_label,
+    pool: it.pool, sub_status: it.sub_status }, load);
+  if (d.empty) {
+    $("#hero").innerHTML = emptyBox("尚无行情数据，请先点右上角「同步日K」");
+    ["structCard", "ruleCard", "candCard", "sigCard"].forEach(x => $("#" + x).innerHTML = "");
+    $("#roundCard").innerHTML = ""; return;
+  }
+  renderHero(); renderStruct(); renderRules(); renderCandidates();
+  renderSignals(); renderRounds();
+
+  const kb = await api("/api/klines?code=" + encodeURIComponent(CODE) + "&limit=1400");
+  BARS = toK(kb.bars || []);
+  if (!chart) initChart();
+  chart.applyNewData(BARS);
+  try { chart.setOffsetRightDistance((chart.getBarSpace().bar || 8) * 30); } catch (e) { chart.setOffsetRightDistance(240); }
+  drawOverlay();
+  $("#hint").textContent = `数据源 ${esc(kb.source || "—")} · 共 ${BARS.length} 根日K · 右侧预留 30 根未来空白区`;
+  paintFoot({ latest_bar: (d.snapshot || {}).date, open_signals: (d.signals || []).filter(s => !s.handled).length });
+}
+
+$("#btnEvalOne").onclick = async () => {
+  const b = $("#btnEvalOne"); b.disabled = true;
+  try { await post("/api/evaluate", { codes: [CODE] }); toast("已重算"); await load(); }
+  catch (e) { toast("失败：" + e.message, true); } finally { b.disabled = false; }
+};
+$("#btnSyncOne").onclick = async () => {
+  const b = $("#btnSyncOne"); b.disabled = true; b.textContent = "同步中…";
+  try { await post("/api/sync", { codes: [CODE] }); toast("已同步"); await load(); }
+  catch (e) { toast("失败：" + e.message, true); }
+  finally { b.disabled = false; b.textContent = "同步日K"; }
+};
+$("#btnReplay").onclick = async () => {
+  const from = prompt("回放起始日期（YYYY-MM-DD）", "2026-06-01");
+  if (!from) return;
+  try {
+    const r = await post("/api/replay", { code: CODE, from: from });
+    if (!r.count) return toast("该区间无事件");
+    $("#modalBox").innerHTML = `<h3>回放 ${esc(from)} 起</h3>
+      <div class="sub">${r.count} 条事件（逐日重演，不改现状）</div>
+      <div style="max-height:52vh;overflow:auto">${r.events.map(e => `
+        <div class="alert p${e.priority || 4}" style="padding:9px 12px">
+          <div class="h"><span class="pri p${e.priority || 4}">P${e.priority || 4}</span>
+            <b style="font-size:12.5px">${esc(e.title)}</b>
+            <span class="tiny" style="margin-left:auto">${esc(e.trade_date || e.date || "")}</span></div>
+          ${e.detail ? `<div class="d">${esc(e.detail)}</div>` : ""}</div>`).join("")}</div>
+      <div class="toolbar" style="justify-content:flex-end;margin-top:14px">
+        <button class="btn primary" onclick="document.getElementById('modal').className='modal'">关闭</button></div>`;
+    $("#modal").className = "modal on";
+  } catch (e) { toast("回放失败：" + e.message, true); }
+};
+$("#modal").onclick = e => { if (e.target.id === "modal") $("#modal").className = "modal"; };
+
+mountNav("/");
+load().catch(e => { toast("加载失败：" + e.message, true); $("#nm").textContent = "加载失败"; $("#sub").textContent = e.message; });
+</script>
+</body>
+</html>

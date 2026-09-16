@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>头部确立 · 仓位管家</title>
+<link rel="stylesheet" href="assets/app.css?v=20260916172250">
+<style>
+  .dot { display:inline-block; width:9px; height:9px; border-radius:50%; background:var(--line-2); }
+  .dot.hit { background:var(--up); box-shadow:0 0 0 3px rgba(226,58,58,.14); }
+  .dot.na { background:#E2E6EC; }
+  .chk th { text-align:center; }
+  .chk td { text-align:center; }
+  .chk th:first-child, .chk td:first-child { text-align:left; }
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="side" id="side"></aside>
+  <main class="main">
+
+    <div class="page-h">
+      <h1>头部确立</h1>
+      <span class="sub">系统只做数学比较与查表，逃顶的判断权在人</span>
+      <span class="right toolbar">
+        <button class="btn sm ghost" id="btnReload">刷新</button>
+        <button class="btn sm primary" id="btnEval">重跑评估</button>
+      </span>
+    </div>
+
+    <div class="card" style="margin-bottom:16px">
+      <div class="card-h"><h2>六面逃顶 · 客观项检查</h2>
+        <span class="sub">红点＝本系统可自动判定的项；灰点＝线索类，需人工核</span>
+        <span class="right"><span class="tiny">按命中数排序</span></span></div>
+      <div style="overflow:auto"><table class="tbl mini chk" id="chk">
+        <thead><tr>
+          <th>标的</th>
+          <th title="收盘 < MA18">①跌破<br>18日线</th>
+          <th title="收盘 < MA45">②跌破<br>45日线</th>
+          <th title="近20日下跌且量能放大（代理指标）">③量价<br>背离代理</th>
+          <th title="DIF < DEA">④MACD<br>死叉</th>
+          <th title="完成度 ≥ 90%，已到量度目标">⑤完成度<br>≥90%</th>
+          <th title="MA18 下穿 MA60">⑥短均<br>下穿长均</th>
+          <th>命中</th>
+          <th>头部颈线</th>
+        </tr></thead>
+        <tbody></tbody>
+      </table></div>
+      <div class="tiny" style="margin-top:12px;line-height:1.9">
+        <b>均线口径</b>：MA18 / MA45 / MA60 / MA200 / MA250（沿用原系统口径，不是常规 5/10/20/60）。<br>
+        <b>线索类两项由人补</b>：龙虎榜机构出逃、龙头封单萎缩 —— 本系统不接任何交易与席位数据源，
+        请人工在行情软件核对后，用详情页的「哨兵」与「事件」留痕。系统不会替你判定顶部，
+        它只把可计算的背离摆到桌面上。
+      </div>
+    </div>
+
+    <div class="grid2" style="align-items:baseline">
+      <div id="topNeck"></div>
+      <div id="broken"></div>
+    </div>
+
+  </main>
+</div>
+<script src="data/data.js?v=20260916172250"></script>
+<script src="assets/app.js?v=20260916172250"></script>
+<script>
+let ROWS = [];
+
+function checks(r) {
+  const v = r.vol || {}, m = r.mas || {};
+  const ma18 = m["18"], ma45 = m["45"], ma60 = m["60"], ma200 = m["200"], ma250 = m["250"];
+  const short = (ma18 != null && ma60 != null) ? (ma18 < ma60) : null;
+  const c = [
+    { k: "①", ok: (ma18 != null && r.close != null) ? r.close < ma18 : null,
+      txt: ma18 != null ? `MA18 ${n(ma18, 2)}` : "无数据" },
+    { k: "②", ok: (ma45 != null && r.close != null) ? r.close < ma45 : null,
+      txt: ma45 != null ? `MA45 ${n(ma45, 2)}` : "无数据" },
+    { k: "③", ok: (r.r20 != null && v.ratio5_20 != null) ? (r.r20 < 0 && v.ratio5_20 > 1.15) : null,
+      txt: `近20日 ${sgn(r.r20, 1)} · 量比 ${v.ratio5_20 != null ? n(v.ratio5_20, 2) : "—"}` },
+    { k: "④", ok: r.macd_cross ? (r.macd_cross === "死叉") : null,
+      txt: `${r.macd_cross || "—"} · ${r.macd_axis || "—"}` },
+    { k: "⑤", ok: r.completion != null ? r.completion >= 90 : null,
+      txt: r.completion != null ? n(r.completion, 1) + "%" : "未激活" },
+    { k: "⑥", ok: short, txt: (ma18 != null && ma60 != null)
+      ? `短均 ${n(ma18, 1)} ${short ? "↓" : "↑"} 长均 ${n(ma60, 1)}` : "无数据" },
+  ];
+  return c;
+}
+
+function render() {
+  const rows = ROWS.filter(r => !r.empty).map(r => {
+    const cs = checks(r);
+    const hits = cs.filter(x => x.ok === true).length;
+    const avail = cs.filter(x => x.ok !== null).length;
+    return Object.assign({}, r, { cs: cs, hits: hits, avail: avail,
+      score: avail ? hits / avail * 100 : 0 });
+  }).sort((a, b) => b.hits - a.hits || a.name.localeCompare(b.name, "zh"));
+
+  $("#chk tbody").innerHTML = rows.map(r => {
+    const col = r.score >= 66 ? "var(--up)" : r.score >= 33 ? "var(--warn)" : "var(--down)";
+    return `<tr data-code="${r.code}">
+      <td><a href="detail.html?code=${encodeURIComponent(r.code)}"><b>${esc(r.name)}</b></a>
+        ${lab(r.label, r.code)}<div class="cd">${esc(r.code)} · ${esc(r.phase_cn || "")}</div></td>
+      ${r.cs.map(c => `<td><span class="dot ${c.ok === true ? "hit" : c.ok === null ? "na" : ""}"
+          title="${esc(c.txt)}"></span><div class="tiny" style="margin-top:2px">${esc(c.txt)}</div></td>`).join("")}
+      <td>${ring(r.score, 34, col)}<div class="tiny">${r.hits}/${r.avail}</div></td>
+      <td class="n">${r.top_neckline ? n(r.top_neckline.price, 2) : "—"}</td>
+    </tr>`;
+  }).join("");
+
+  const tn = rows.filter(r => r.top_neckline);
+  $("#topNeck").innerHTML = card("已录头部颈线", "跌破触发 P1 清仓提示",
+    tn.length ? `<table class="tbl mini"><thead><tr><th>标的</th>
+      <th style="text-align:right">头部颈线</th><th style="text-align:right">现价</th>
+      <th style="text-align:right">距离</th><th>状态</th></tr></thead><tbody>
+      ${tn.map(r => {
+        const d = (r.close / r.top_neckline.price - 1) * 100;
+        const broke = r.close < r.top_neckline.price;
+        return `<tr data-code="${r.code}">
+          <td><a href="detail.html?code=${encodeURIComponent(r.code)}"><b>${esc(r.name)}</b></a>
+            <div class="cd">${esc(r.code)}</div></td>
+          <td class="n" style="text-align:right">${n(r.top_neckline.price, 2)}</td>
+          <td class="n" style="text-align:right">${n(r.close, 2)}</td>
+          <td class="n ${broke ? "down" : ""}" style="text-align:right">${sgn(d, 1)}</td>
+          <td>${broke ? `<span class="chip down">已跌破</span>` : `<span class="chip flat">观察中</span>`}</td>
+        </tr>`;
+      }).join("")}</tbody></table>` : emptyBox("尚未录头部颈线"));
+
+  const br = rows.filter(r => r.invalidation != null && r.close != null && r.close < r.invalidation);
+  $("#broken").innerHTML = card("已跌破失效线", "颈线 × 系数（实时计算，不落库）",
+    br.length ? `<table class="tbl mini"><thead><tr><th>标的</th>
+      <th style="text-align:right">颈线</th><th style="text-align:right">失效线</th>
+      <th style="text-align:right">现价</th><th>提示</th></tr></thead><tbody>
+      ${br.map(r => `<tr data-code="${r.code}">
+        <td><a href="detail.html?code=${encodeURIComponent(r.code)}"><b>${esc(r.name)}</b></a>
+          <div class="cd">${esc(r.code)} · ${esc(r.phase_cn || "")}</div></td>
+        <td class="n" style="text-align:right">${n(r.neckline, 2)}</td>
+        <td class="n" style="text-align:right">${n(r.invalidation, 2)}</td>
+        <td class="n down" style="text-align:right">${n(r.close, 2)}</td>
+        <td class="tiny">${r.phase === "active" || r.phase === "realized"
+          ? "假突破条件成立（仅持有状态生效）" : "结构未激活，不触发假突破规则"}</td>
+      </tr>`).join("")}</tbody></table>` : emptyBox("没有标的跌破失效线"));
+
+  $$("#chk tbody tr[data-code],#topNeck tr[data-code],#broken tr[data-code]")
+    .forEach(tr => tr.onclick = e => { if (!e.target.closest("a")) location.href = "detail.html?code=" + encodeURIComponent(tr.dataset.code); });
+}
+
+async function load() {
+  const d = await api("/api/dashboard");
+  ROWS = d.rows || [];
+  render(); paintFoot(d.meta); bindLabelPicker(d, load);
+}
+$("#btnReload").onclick = () => load();
+$("#btnEval").onclick = async () => {
+  const b = $("#btnEval"); b.disabled = true; b.textContent = "评估中…";
+  try { await post("/api/evaluate", {}); toast("已重跑"); await load(); }
+  catch (e) { toast("失败：" + e.message, true); } finally { b.disabled = false; b.textContent = "重跑评估"; }
+};
+mountNav("/top");
+load().catch(e => toast("加载失败：" + e.message, true));
+</script>
+</body>
+</html>
